@@ -7,11 +7,14 @@ import {
 import { Accuracy, PositionEval } from "@/types/eval";
 import { getPositionWinPercentage } from "./winPercentage";
 
+/**
+ * БАЗОВАЯ метрика точности (как была): возвращает по одному числу на цвет.
+ * Логика НЕ изменена: (weightedMean + harmonicMean) / 2.
+ */
 export const computeAccuracy = (positions: PositionEval[]): Accuracy => {
   const positionsWinPercentage = positions.map(getPositionWinPercentage);
 
   const weights = getAccuracyWeights(positionsWinPercentage);
-
   const movesAccuracy = getMovesAccuracy(positionsWinPercentage);
 
   const whiteAccuracy = getPlayerAccuracy(movesAccuracy, weights, "white");
@@ -22,6 +25,65 @@ export const computeAccuracy = (positions: PositionEval[]): Accuracy => {
     black: blackAccuracy,
   };
 };
+
+/* ===========================================================================
+ *                    СТРОГИЙ ВАРИАНТ (как в Chesskit)
+ * ===========================================================================
+ * Возвращает для каждого цвета: weighted, harmonic и itera (= среднее).
+ * Сигнатуры базовых функций/экспортов не меняю, добавляю новые.
+ */
+
+export type AccTriple = { weighted: number; harmonic: number; itera: number };
+export type AccuracyStrict = { white: AccTriple; black: AccTriple };
+
+/** Удобный враппер: берёт Win% из позиций и вызывает строгий расчёт. */
+export const computeAccuracyStrictFromPositions = (
+  positions: PositionEval[]
+): AccuracyStrict => {
+  const positionsWinPercentage = positions.map(getPositionWinPercentage);
+  return computeAccuracyStrict(positionsWinPercentage);
+};
+
+/**
+ * Строгая точность из массива Win% по позициям.
+ * Делит по цветам, считает отдельно weighted и harmonic, затем itera = (w + h) / 2.
+ */
+export const computeAccuracyStrict = (
+  positionsWinPercentage: number[]
+): AccuracyStrict => {
+  const weights = getAccuracyWeights(positionsWinPercentage);
+  const movesAccuracy = getMovesAccuracy(positionsWinPercentage);
+
+  const splitByColor = <T,>(arr: T[]) => ({
+    white: arr.filter((_, i) => i % 2 === 0),
+    black: arr.filter((_, i) => i % 2 === 1),
+  });
+
+  const accSplit = splitByColor(movesAccuracy);
+  const wSplit = splitByColor(weights.slice(0, movesAccuracy.length)); // длины совпадают с ходами
+
+  const wWeighted = getWeightedMean(accSplit.white, wSplit.white);
+  const wHarmonic = getHarmonicMean(accSplit.white);
+  const bWeighted = getWeightedMean(accSplit.black, wSplit.black);
+  const bHarmonic = getHarmonicMean(accSplit.black);
+
+  return {
+    white: {
+      weighted: wWeighted,
+      harmonic: wHarmonic,
+      itera: (wWeighted + wHarmonic) / 2,
+    },
+    black: {
+      weighted: bWeighted,
+      harmonic: bHarmonic,
+      itera: (bWeighted + bHarmonic) / 2,
+    },
+  };
+};
+
+/* ===========================================================================
+ *                          ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+ * ======================================================================== */
 
 const getPlayerAccuracy = (
   movesAccuracy: number[],

@@ -509,13 +509,16 @@ async function evaluatePosition(sf, fen, depth, multiPv){
 /* ====== GAME EVAL ====== */
 async function evaluateGameAll(sf, fens, uciMoves, depth, multiPv, progressId){
   const positions = []; const moves = [];
-  for (let i=0;i<fens.length;i++){
+  for (let i = 0; i < fens.length; i++) {
     const fen = fens[i];
+
+    // Отправим в движок, дождёмся bestmove
     const pos = await evaluatePosition(sf, fen, depth, multiPv);
     positions.push(pos);
 
-    if (progressId){
-      const progress = Math.round(((i+1)/fens.length)*100);
+    // Прогресс по позициям
+    if (progressId) {
+      const progress = Math.round(((i + 1) / fens.length) * 100);
       self.postMessage({ id: progressId, type: "progress", value: progress });
     }
 
@@ -525,14 +528,19 @@ async function evaluateGameAll(sf, fens, uciMoves, depth, multiPv, progressId){
       const playedLine = pos.lines.find(l => l.pv[0] === played);
       const evalPlayed = typeof playedLine?.cp === "number" ? playedLine.cp : evalBefore - 50;
       const lossCp = Math.max(0, evalBefore - evalPlayed);
+
       moves.push({
-        idx:i, fen, side: sideToMoveFromFen(fen), played, best: pos.bestMove,
-        lossCp, classification: classifyByLoss(lossCp),
-        evalBeforeCp: evalBefore, evalAfterBestCp: evalBefore, evalAfterPlayedCp: evalPlayed
+        idx: i,
+        side: i % 2 === 0 ? "w" : "b",
+        fen,
+        played,
+        best: pos.lines[0]?.pv?.[0],
+        evalBefore,
+        evalPlayed,
+        lossCp
       });
     }
   }
-
   const whiteLosses = moves.filter(m=>m.side==="w").map(m=>m.lossCp||0);
   const blackLosses = moves.filter(m=>m.side==="b").map(m=>m.lossCp||0);
   const acplWhite = Math.round(avg(whiteLosses));
@@ -604,15 +612,20 @@ async function handleMessage(msg){
       case "evaluate-game": {
         const { fens, uciMoves, depth, multiPv, progressId } = msg.payload || {};
         if (!Array.isArray(fens) || !fens.length) return respond(msg, undefined, "invalid_fens");
+
+        // Фолбэк: если progressId не пришёл, используем id запроса
+        const __progressId = progressId || msg.id;
+
         const out = await evaluateGameAll(
           sfEngine,
           fens.map(String),
-          Array.isArray(uciMoves)? uciMoves.map(String): undefined,
-          Number.isFinite(depth)?+depth:16,
-          Number.isFinite(multiPv)?+multiPv:3,
-          progressId
+          Array.isArray(uciMoves) ? uciMoves.map(String) : undefined,
+          Number.isFinite(depth) ? +depth : 16,
+          Number.isFinite(multiPv) ? +multiPv : 3,
+          __progressId
         );
-        respond(msg, out); break;
+        respond(msg, out);
+        break;
       }
       case "next-move": {
         const { fen, elo, depth } = msg.payload || {};

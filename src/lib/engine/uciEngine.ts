@@ -22,6 +22,12 @@ const LW = (scope: string, extra?: unknown) =>
 const LE = (scope: string, extra?: unknown) =>
   extra !== undefined ? console.error(`[UciEngine:${scope}]`, extra) : console.error(`[UciEngine:${scope}]`);
 
+// Локальные алиасы на случай одноимённых методов внутри класса
+const __LOG_L = L;
+const __LOG_LI = LI;
+const __LOG_LW = LW;
+const __LOG_LE = LE;
+
 /* ------------------------------------------------------------------ */
 /* Разрешение путей/режимов запуска                                   */
 /* ------------------------------------------------------------------ */
@@ -141,10 +147,10 @@ async function makeNodeWorkerWrapper(absPath: string): Promise<WorkerLike> {
     postMessage: (data: any) => w.postMessage(data),
     terminate: () => w.terminate(),
     addEventListener: (type, listener) => {
-      listeners[type as keyof typeof listeners]?.add(listener);
+      (listeners as any)[type]?.add(listener);
     },
     removeEventListener: (type, listener) => {
-      listeners[type as keyof typeof listeners]?.delete(listener);
+      (listeners as any)[type]?.delete(listener);
     },
   };
 }
@@ -190,7 +196,8 @@ type EngineRequest<
 > = {
   id: string;
   type: TType;
-  payload: Extract<EngineCallPayload, { type: TType }>["params"];
+  // FIX: воркер ожидает "params", а не "payload"
+  params: Extract<EngineCallPayload, { type: TType }>["params"];
 };
 
 /** Аккуратный парсер: поддержка строковых JSON-сообщений от воркера */
@@ -235,6 +242,20 @@ export class UciEngine {
   /** Привязки onProgress по id активных запросов */
   private progressCallbacks = new Map<string, (value: number) => void>();
 
+  // --- ВНУТРЕННИЕ ОБЁРТКИ ДЛЯ ЛОГГЕРА (не меняют существующую схему логов) ---
+  private L(scope: string, extra?: unknown): void {
+    try { __LOG_L(scope, extra); } catch {}
+  }
+  private LI(scope: string, extra?: unknown): void {
+    try { __LOG_LI(scope, extra); } catch {}
+  }
+  private LW(scope: string, extra?: unknown): void {
+    try { __LOG_LW(scope, extra); } catch {}
+  }
+  private LE(scope: string, extra?: unknown): void {
+    try { __LOG_LE(scope, extra); } catch {}
+  }
+
   private constructor(engineName: EngineName) {
     this.engineName = engineName;
   }
@@ -271,7 +292,7 @@ export class UciEngine {
           try {
             cb(v);
           } catch (err) {
-            LE("progressCallback:error", err);
+            this.LE("progressCallback:error", err);
           }
         } else if (this.progressCallbacks.size === 1) {
           // fallback: если id отсутствует, но активен ровно один запрос
@@ -281,27 +302,27 @@ export class UciEngine {
             try {
               only(v);
             } catch (err) {
-              LE("progressCallback:fallbackError", err);
+              this.LE("progressCallback:fallbackError", err);
             }
           }
         } else {
-          LW("progress:unmatched", { id, value, active: this.progressCallbacks.size });
+          this.LW("progress:unmatched", { id, value, active: this.progressCallbacks.size });
         }
       } else if ((msg as any).type === "log") {
         console.debug(`[${this.engineName}]`, (msg as EngineLogMsg).payload);
       } else if ((msg as any).type === "error") {
         console.error(`[${this.engineName}]`, (msg as EngineErrorMsg).error);
       } else if ((msg as any).type === "ready") {
-        LI("worker:ready");
+        this.LI("worker:ready");
       }
     });
 
     this.worker.addEventListener("error", (e: any) => {
-      LE("worker.onerror", { message: e?.message, stack: e?.error?.stack });
+      this.LE("worker.onerror", { message: e?.message, stack: e?.error?.stack });
     });
 
     this.worker.addEventListener("messageerror", (e: any) => {
-      LE("worker.messageerror", { data: e?.data });
+      this.LE("worker.messageerror", { data: e?.data });
     });
 
     LI("constructor:done");
@@ -318,33 +339,28 @@ export class UciEngine {
     return eng;
   }
 
-  /** Универсальный RPC-вызов с прогрессом и поддержкой legacy-ответов */
-  private call<TResp>(
+  private call<TResp = unknown>(
     type: EngineCallPayload["type"],
-    payload: any,
+    payload?: EngineCallPayload extends { type: typeof type; params: infer P } ? P : any,
     onProgress?: (value: number) => void,
   ): Promise<TResp> {
-    const id = Math.random().toString(36).slice(2);
-    L("call:begin", { type, id });
+    const id = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
-    if (!this.worker) {
-      LE("call:noWorker", { type, id });
-      throw new Error("Engine worker is not initialized");
-    }
-
-    // если клиент просил прогресс, добавим progressId в payload (НЕ меняя имена полей)
+    // если есть onProgress — добавим progressId в payload, если его там нет
     const withProgressId =
-      onProgress && payload && typeof payload === "object" && !("progressId" in payload)
-        ? { ...payload, progressId: id }
+      onProgress && payload && typeof payload === "object" && !("progressId" in (payload as any))
+        ? { ...(payload as any), progressId: id }
         : payload;
 
+    const progressKey = (withProgressId as any)?.progressId ?? id;
     if (onProgress) {
-      this.progressCallbacks.set(id, onProgress);
-      L("call:progressAttached", { id });
+      this.progressCallbacks.set(progressKey, onProgress);
+      this.L("call:progressAttached", { id: progressKey });
     }
 
-    const req: EngineRequest = { id, type, payload: withProgressId } as EngineRequest;
-    L("call:postMessage", { id, type });
+    // FIX: отправляем "params", не "payload"
+    const req: EngineRequest = { id, type, params: withProgressId } as EngineRequest;
+    this.L("call:postMessage", { id, type });
 
     return new Promise<TResp>((resolve, reject) => {
       const started = Date.now();
@@ -353,46 +369,53 @@ export class UciEngine {
         const msg = normalizeMessage<TResp>(ev);
         if (!msg || typeof msg !== "object") return;
 
-        // Завершение/отклонение по совпадению id
-        if ("id" in msg && (msg as any).id === id) {
-          const took = Date.now() - started;
-          this.worker.removeEventListener("message", handleMessage);
-          if (this.progressCallbacks.has(id)) this.progressCallbacks.delete(id);
+        // прогресс из worker приходит с id = progressKey
+        if ((msg as any).type === "progress" && (msg as any).id === progressKey) {
+          const value = Number((msg as any).value ?? 0);
+          const cb = this.progressCallbacks.get(progressKey);
+          if (cb) cb(value);
+          return;
+        }
 
-          // Новый формат
-          if ((msg as any).type === "result") {
-            LI("call:result", { id, type, tookMs: took });
-            resolve((msg as EngineResultMsg<TResp>).payload);
+        // финальный ответ — по id вызова
+        if ((msg as any).id === id) {
+          // Legacy формат: { id, result }
+          if ("result" in (msg as any)) {
+            this.worker.removeEventListener("message", handleMessage);
+            const took = Date.now() - started;
+            this.LI("call:resolve", { id, tookMs: took });
+            // @ts-ignore
+            resolve((msg as any).result as TResp);
             return;
           }
+          // Новый формат: { id, type: "result", payload }
+          if ((msg as any).type === "result" && "payload" in (msg as any)) {
+            this.worker.removeEventListener("message", handleMessage);
+            const took = Date.now() - started;
+            this.LI("call:resolve", { id, tookMs: took });
+            resolve((msg as any).payload as TResp);
+            return;
+          }
+          // Запрос отвергнут: { id, type: "rejected", error? }
           if ((msg as any).type === "rejected") {
-            LE("call:rejected", { id, type, tookMs: took, error: (msg as EngineRejectedMsg).error });
-            reject(new Error((msg as EngineRejectedMsg).error ?? "Engine call rejected"));
+            this.worker.removeEventListener("message", handleMessage);
+            this.LE("call:reject", { id, err: (msg as any).error });
+            reject(new Error(String((msg as any).error ?? "engine_rejected")));
             return;
           }
-
-          // Legacy формат: { id, result?, error? }
-          if ("result" in (msg as any) || "error" in (msg as any)) {
-            const legacy = msg as EngineLegacyResultMsg<TResp>;
-            if (legacy.error) {
-              LE("call:legacyError", { id, type, tookMs: took, error: legacy.error });
-              reject(new Error(String(legacy.error)));
-            } else {
-              LI("call:legacyResult", { id, type, tookMs: took });
-              resolve(legacy.result as TResp);
-            }
+          // Некоторые воркеры могут слать { id, type: "error", error }
+          if ((msg as any).type === "error" && "error" in (msg as any)) {
+            this.worker.removeEventListener("message", handleMessage);
+            this.LE("call:reject", { id, err: (msg as any).error });
+            reject(new Error(String((msg as any).error ?? "engine_error")));
             return;
           }
-
-          // Неожиданное (но наш id)
-          LW("call:unknownResponse", msg);
         }
       };
 
       const handleError = (e: any) => {
-        this.worker.removeEventListener("message", handleMessage);
-        if (this.progressCallbacks.has(id)) this.progressCallbacks.delete(id);
-        LE("call:postMessageError", { id, type, err: e });
+        try { this.worker.removeEventListener("message", handleMessage); } catch {}
+        this.LE("call:reject", { id, err: e });
         reject(e);
       };
 
