@@ -209,12 +209,6 @@ type EvaluateGameParamsExt = EvaluateGameParams & { playersRatings?: PlayersRati
 type UciLine = { pv: string[]; cp?: number; mate?: number; depth?: number; multiPv?: number };
 type UciPosEval = { lines: UciLine[]; bestMove?: string };
 
-type EvaluatePositionWithUpdateParamsExt = EvaluatePositionWithUpdateParams & {
-  threads?: number;
-  hashMb?: number;
-  syzygyPath?: string;
-};
-
 class NativeUciEngine {
   constructor(private readonly binPath: string) {
     if (!binPath) throw new Error("ENGINE_PATH/STOCKFISH_PATH is not set");
@@ -253,7 +247,7 @@ class NativeUciEngine {
     const mate = get("mate");
     const cp = mate === undefined ? get("cp") : undefined;
     const pvIdx = s.indexOf(" pv ");
-    const pv = pvIdx >= 0 ? s.slice(pvIdx + 4).trim().split(/\s+/) : [];
+    const pv = pvIdx >= 0 ? s.slice(pvIdx + 4).trim().split(/\\s+/) : [];
     if (!multiPv) return null;
     const line: UciLine = { pv, depth, multiPv };
     if (typeof mate === "number") line.mate = mate;
@@ -261,7 +255,7 @@ class NativeUciEngine {
     return line;
   }
 
-  async evaluatePositionWithUpdate(params: EvaluatePositionWithUpdateParamsExt): Promise<UciPosEval> {
+  async evaluatePositionWithUpdate(params: any): Promise<UciPosEval> {
     const { fen, depth, multiPv } = params;
     const proc = spawn(this.binPath, [], { stdio: ["pipe", "pipe", "pipe"] });
 
@@ -310,10 +304,20 @@ class NativeUciEngine {
     if (Number.isFinite(params.hashMb)) this.send(proc, `setoption name Hash value ${params.hashMb}`, ctx);
     if (params.syzygyPath) this.send(proc, `setoption name SyzygyPath value ${params.syzygyPath}`, ctx);
     this.send(proc, `setoption name MultiPV value ${Math.max(1, multiPv || 1)}`, ctx);
+    // дополнительные опции: Use NNUE и ELO
+    if (typeof params.useNNUE === "boolean") {
+      this.send(proc, `setoption name Use NNUE value ${params.useNNUE ? 'true' : 'false'}`, ctx);
+    }
+    if (Number.isFinite(params.elo)) {
+      const eloVal = Number(params.elo);
+      this.send(proc, `setoption name UCI_LimitStrength value true`, ctx);
+      this.send(proc, `setoption name UCI_Elo value ${eloVal}`, ctx);
+    }
     this.send(proc, "isready", ctx);
     this.send(proc, "ucinewgame", ctx);
     this.send(proc, `position fen ${fen}`, ctx);
-    this.send(proc, `go depth ${Math.max(1, depth || DEFAULT_DEPTH)} multipv ${Math.max(1, multiPv || 1)}`, ctx);
+    // Chesskit sets MultiPV through setoption; do not include multipv in the go command.
+    this.send(proc, `go depth ${Math.max(1, depth || DEFAULT_DEPTH)}`, ctx);
 
     await new Promise<void>((resolve) => {
       const handler = (chunk: Buffer) => {
@@ -350,7 +354,7 @@ class NativeUciEngine {
     return { lines: ordered, bestMove };
   }
 
-  async evaluateGame(params: EvaluateGameParams, onProgress?: (percent: number) => void): Promise<GameEval> {
+  async evaluateGame(params: any, onProgress?: (percent: number) => void): Promise<GameEval> {
     const { fens, depth, multiPv } = params;
     const outPositions: any[] = [];
     const total = fens.length;
@@ -369,6 +373,11 @@ class NativeUciEngine {
         fen,
         depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
         multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
+        threads: params.threads,
+        hashMb: params.hashMb,
+        syzygyPath: params.syzygyPath,
+        useNNUE: params.useNNUE,
+        elo: params.elo,
       });
       outPositions.push({ ...r });
       if (onProgress) onProgress(((i + 1) / total) * 100);
@@ -401,7 +410,7 @@ class NativeUciEngine {
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
     } catch {
-      log.warn(`Binary at ${candidate} may not be executable. Run: chmod +x "${candidate}"`);
+      log.warn(`Binary at ${candidate} may not be executable. Run: chmod +x \"${candidate}\"`);
     }
     return new NativeUciEngine(candidate);
   }
@@ -410,15 +419,17 @@ class NativeUciEngine {
 // -------------------- position eval --------------------
 app.post("/api/evaluate/position", async (req, res) => {
   try {
-    const { fen, depth, multiPv } = req.body ?? {};
+    const { fen, depth, multiPv, useNNUE, elo } = req.body ?? {};
     if (!fen || typeof fen !== "string") {
       return res.status(400).json({ error: "fen_required" });
     }
     const engine = await getEngine();
-    const params: EvaluatePositionWithUpdateParams = {
+    const params: any = {
       fen,
       depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
       multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
+      useNNUE,
+      elo,
     };
     const finalEval = await engine.evaluatePositionWithUpdate(params);
     res.json(finalEval);
@@ -464,13 +475,15 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 
     const playersRatings = normalizePlayersRatings(body);
 
-    const params: EvaluateGameParamsExt = {
+    const params: any = {
       fens,
       uciMoves,
       depth,
       multiPv,
       workersNb: Number.isFinite(body.workersNb) ? Number(body.workersNb) : 1,
       playersRatings,
+      useNNUE: body.useNNUE,
+      elo: body.elo,
     };
 
     const onProgress =
@@ -642,7 +655,7 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 // -------------------- game eval by PGN --------------------
 app.post("/api/evaluate/game", async (req, res) => {
   try {
-    const { pgn, depth, multiPv, workersNb } = req.body ?? {};
+    const { pgn, depth, multiPv, workersNb, useNNUE, elo } = req.body ?? {};
     if (!pgn || typeof pgn !== "string") {
       return res.status(400).json({ error: "pgn_required" });
     }
@@ -651,13 +664,15 @@ app.post("/api/evaluate/game", async (req, res) => {
 
     const playersRatings = normalizePlayersRatings(req.body);
 
-    const params: EvaluateGameParamsExt = {
+    const params: any = {
       fens,
       uciMoves,
       depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
       multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
       workersNb: Number.isFinite(workersNb) ? Number(workersNb) : 1,
       playersRatings,
+      useNNUE,
+      elo,
     };
 
     const out: GameEval = await engine.evaluateGame(params);
@@ -686,8 +701,8 @@ function pgnToFenAndUci(pgn: string): { fens: string[]; uciMoves: string[] } {
 
 // -------------------- engine lifecycle --------------------
 type EngineIface = {
-  evaluatePositionWithUpdate: (p: EvaluatePositionWithUpdateParams) => Promise<{ lines: any[]; bestMove?: string }>;
-  evaluateGame: (p: EvaluateGameParams, onProgress?: (p: number) => void) => Promise<GameEval>;
+  evaluatePositionWithUpdate: (p: any) => Promise<{ lines: any[]; bestMove?: string }>;
+  evaluateGame: (p: any, onProgress?: (p: number) => void) => Promise<GameEval>;
 };
 
 let engineInstance: EngineIface | null = null;
@@ -699,9 +714,9 @@ async function getEngine(): Promise<EngineIface> {
     enginePromise = (async () => {
       const eng = await NativeUciEngine.create();
       const adapted: EngineIface = {
-        evaluatePositionWithUpdate: (p) =>
-          eng.evaluatePositionWithUpdate(p as EvaluatePositionWithUpdateParamsExt),
-        evaluateGame: (p, onProgress) => eng.evaluateGame(p, onProgress),
+        evaluatePositionWithUpdate: (p: any) =>
+          eng.evaluatePositionWithUpdate(p),
+        evaluateGame: (p: any, onProgress?: (p: number) => void) => eng.evaluateGame(p, onProgress),
       };
       engineInstance = adapted;
       return adapted;

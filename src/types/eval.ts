@@ -8,6 +8,16 @@ export interface PositionEval {
   lines: LineEval[];
 }
 
+export interface EvaluateGameParams {
+  fens: string[];
+  uciMoves: string[];
+  depth?: number;
+  multiPv?: number;
+  setEvaluationProgress?: (value: number) => void;
+  playersRatings?: { white?: number; black?: number };
+  workersNb?: number;
+}
+
 export interface LineEval {
   pv: string[];
   cp?: number;
