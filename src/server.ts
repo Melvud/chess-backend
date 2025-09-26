@@ -32,6 +32,28 @@ const ENGINE_NAME: EngineName =
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
 const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
 
+// Лог файл для общения с движком
+const ENGINE_IO_LOG =
+  process.env.ENGINE_IO_LOG ??
+  path.join(process.cwd(), "logs", "engine-io.log");
+
+function ensureFileWritable(p: string) {
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // создаём файл если нет
+  try {
+    if (!fs.existsSync(p)) fs.writeFileSync(p, "");
+  } catch {}
+}
+ensureFileWritable(ENGINE_IO_LOG);
+
+const engineIoStream = fs.createWriteStream(ENGINE_IO_LOG, { flags: "a" });
+function engineIoWrite(ev: Record<string, any>) {
+  try {
+    engineIoStream.write(JSON.stringify({ ts: Date.now(), ...ev }) + "\n");
+  } catch {}
+}
+
 function detectSpawnMode(enginePath: string): "native" | "node" | "web" {
   const p = (enginePath || "").toLowerCase();
   if (p.endsWith(".cjs") || p.includes("node-worker")) return "node";
@@ -198,8 +220,26 @@ class NativeUciEngine {
     if (!binPath) throw new Error("ENGINE_PATH/STOCKFISH_PATH is not set");
   }
 
-  private send(proc: ChildProcessWithoutNullStreams, cmd: string) {
-    proc.stdin.write(cmd + "\n");
+  private send(proc: ChildProcessWithoutNullStreams, cmd: string, ctx?: any) {
+    try {
+      proc.stdin.write(cmd + "\n");
+      engineIoWrite({
+        kind: "stdin",
+        pid: proc.pid,
+        cmd,
+        ...ctx,
+      });
+    } catch (e: any) {
+      engineIoWrite({
+        kind: "meta",
+        pid: proc.pid,
+        level: "error",
+        msg: "stdin_write_failed",
+        cmd,
+        err: String(e?.message ?? e),
+        ...ctx,
+      });
+    }
   }
 
   private parseInfoLine(s: string): UciLine | null {
@@ -225,11 +265,27 @@ class NativeUciEngine {
     const { fen, depth, multiPv } = params;
     const proc = spawn(this.binPath, [], { stdio: ["pipe", "pipe", "pipe"] });
 
+    engineIoWrite({
+      kind: "meta",
+      pid: proc.pid,
+      event: "spawn",
+      bin: this.binPath,
+      fen,
+      depth,
+      multiPv,
+      threads: params.threads,
+      hashMb: params.hashMb,
+      syzygyPath: params.syzygyPath,
+    });
+
+    const ctx = { fen, depth, multiPv };
+
     const lines: Record<number, UciLine> = {};
     let bestMove: string | undefined;
 
     const onData = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
+      engineIoWrite({ kind: "stdout", pid: proc.pid, data: text, ...ctx });
       for (const raw of text.split(/\r?\n/)) {
         const s = raw.trim();
         if (!s) continue;
@@ -244,21 +300,25 @@ class NativeUciEngine {
     };
 
     proc.stdout.on("data", onData);
-    proc.stderr.on("data", (b) => log.debug({ engineErr: String(b) }));
+    proc.stderr.on("data", (b) =>
+      engineIoWrite({ kind: "stderr", pid: proc.pid, data: String(b), ...ctx })
+    );
 
-    this.send(proc, "uci");
-    if (Number.isFinite(params.threads)) this.send(proc, `setoption name Threads value ${params.threads}`);
-    if (Number.isFinite(params.hashMb)) this.send(proc, `setoption name Hash value ${params.hashMb}`);
-    if (params.syzygyPath) this.send(proc, `setoption name SyzygyPath value ${params.syzygyPath}`);
-    this.send(proc, `setoption name MultiPV value ${Math.max(1, multiPv || 1)}`);
-    this.send(proc, "isready");
-    this.send(proc, "ucinewgame");
-    this.send(proc, `position fen ${fen}`);
-    this.send(proc, `go depth ${Math.max(1, depth || DEFAULT_DEPTH)} multipv ${Math.max(1, multiPv || 1)}`);
+    // init & go
+    this.send(proc, "uci", ctx);
+    if (Number.isFinite(params.threads)) this.send(proc, `setoption name Threads value ${params.threads}`, ctx);
+    if (Number.isFinite(params.hashMb)) this.send(proc, `setoption name Hash value ${params.hashMb}`, ctx);
+    if (params.syzygyPath) this.send(proc, `setoption name SyzygyPath value ${params.syzygyPath}`, ctx);
+    this.send(proc, `setoption name MultiPV value ${Math.max(1, multiPv || 1)}`, ctx);
+    this.send(proc, "isready", ctx);
+    this.send(proc, "ucinewgame", ctx);
+    this.send(proc, `position fen ${fen}`, ctx);
+    this.send(proc, `go depth ${Math.max(1, depth || DEFAULT_DEPTH)} multipv ${Math.max(1, multiPv || 1)}`, ctx);
 
     await new Promise<void>((resolve) => {
       const handler = (chunk: Buffer) => {
-        if (chunk.toString("utf8").includes("bestmove")) {
+        const t = chunk.toString("utf8");
+        if (t.includes("bestmove")) {
           proc.stdout.off("data", handler);
           resolve();
         }
@@ -266,10 +326,27 @@ class NativeUciEngine {
       proc.stdout.on("data", handler);
     });
 
-    try { proc.stdin.end("quit\n"); } catch {}
-    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+    try {
+      this.send(proc, "quit", ctx);
+      proc.stdin.end();
+    } catch {}
+    setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch {}
+    }, 150);
 
     const ordered = Object.values(lines).sort((a, b) => (a.multiPv! - b.multiPv!));
+
+    engineIoWrite({
+      kind: "meta",
+      pid: proc.pid,
+      event: "result",
+      fen,
+      depth,
+      multiPv,
+      bestMove,
+      lines: ordered,
+    });
+
     return { lines: ordered, bestMove };
   }
 
@@ -277,6 +354,15 @@ class NativeUciEngine {
     const { fens, depth, multiPv } = params;
     const outPositions: any[] = [];
     const total = fens.length;
+
+    engineIoWrite({
+      kind: "meta",
+      event: "evaluateGame_start",
+      total,
+      depth,
+      multiPv,
+    });
+
     for (let i = 0; i < total; i++) {
       const fen = fens[i];
       const r = await this.evaluatePositionWithUpdate({
@@ -297,6 +383,12 @@ class NativeUciEngine {
         multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
       } as any,
     } as any;
+
+    engineIoWrite({
+      kind: "meta",
+      event: "evaluateGame_done",
+      positions: outPositions.length,
+    });
 
     return gameEval;
   }
@@ -409,7 +501,7 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
           : [];
         const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
         const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
-        // критично: если нет ни cp, ни mate — ставим cp:0
+        // если нет ни cp, ни mate — ставим cp:0, чтобы не падали хелперы
         const cpFixed = cpVal == null && mateVal == null ? 0 : cpVal;
         return { pv, cp: cpFixed, mate: mateVal };
       });
@@ -432,6 +524,44 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 
       return { fen: String(fen ?? ""), idx, lines };
     });
+
+    // Правильный расчет ACPL
+    const calculateACPL = (positions: any[]): { white: number; black: number } => {
+      let whiteCPL = 0;
+      let blackCPL = 0;
+      let whiteMoves = 0;
+      let blackMoves = 0;
+
+      for (let i = 1; i < positions.length; i++) {
+        const prevPos = positions[i - 1];
+        const currPos = positions[i];
+        const prevEval = prevPos.lines[0];
+        const currEval = currPos.lines[0];
+        if (!prevEval || !currEval) continue;
+
+        const prevCP = prevEval.cp ?? (prevEval.mate ? prevEval.mate * 1000 : 0);
+        const currCP = currEval.cp ?? (currEval.mate ? currEval.mate * 1000 : 0);
+
+        const isWhiteMove = (i - 1) % 2 === 0;
+
+        if (isWhiteMove) {
+          const loss = Math.max(0, prevCP - currCP);
+          whiteCPL += Math.min(loss, 1000);
+          whiteMoves++;
+        } else {
+          const loss = Math.max(0, currCP - prevCP);
+          blackCPL += Math.min(loss, 1000);
+          blackMoves++;
+        }
+      }
+
+      return {
+        white: whiteMoves > 0 ? Math.round(whiteCPL / whiteMoves) : 0,
+        black: blackMoves > 0 ? Math.round(blackCPL / blackMoves) : 0,
+      };
+    };
+
+    const acpl = calculateACPL(positions);
 
     const winPercents: number[] = (positions as any[]).map((p: any) => {
       const first = p?.lines?.[0];
@@ -468,7 +598,6 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
       classified: classifiedPositions,
     });
 
-    const acpl = out.acpl ?? { white: 0, black: 0 };
     const estRaw = computeEstimatedElo(positions as any, undefined, undefined) as any;
 
     const toIntOrNull = (v: unknown): number | null => {
@@ -702,5 +831,5 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   const mode = detectSpawnMode(ENGINE_PATH);
-  log.info(`Server http://localhost:${PORT} | Engine=${ENGINE_NAME} | Mode=${mode} | Bin=${ENGINE_PATH}`);
+  log.info(`Server http://localhost:${PORT} | Engine=${ENGINE_NAME} | Mode=${mode} | Bin=${ENGINE_PATH} | EngineIOLog=${ENGINE_IO_LOG}`);
 });
