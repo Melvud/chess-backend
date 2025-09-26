@@ -1,3 +1,4 @@
+// src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -8,8 +9,8 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import { Chess } from "chess.js";
 import { webcrypto as nodeCrypto } from "node:crypto";
+import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 
-import { UciEngine } from "./lib/engine/uciEngine";
 import { EngineName, MoveClassification } from "./types/enums";
 import type {
   GameEval,
@@ -25,15 +26,17 @@ import { computeAccuracyStrict } from "@/lib/engine/helpers/accuracy";
 // -------------------- ENV --------------------
 const PORT = Number(process.env.PORT ?? 8080);
 const ENGINE_PATH =
-  process.env.ENGINE_PATH ?? "/engines/stockfish-17/worker.js";
+  process.env.ENGINE_PATH ?? process.env.STOCKFISH_PATH ?? "./bin/stockfish";
 const ENGINE_NAME: EngineName =
   (process.env.ENGINE_NAME as EngineName) ?? EngineName.Stockfish17Lite;
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
 const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
 
-function detectSpawnMode(enginePublicPath: string): "node" | "web" {
-  const p = enginePublicPath.toLowerCase();
-  return p.endsWith(".cjs") || p.includes("node-worker") ? "node" : "web";
+function detectSpawnMode(enginePath: string): "native" | "node" | "web" {
+  const p = (enginePath || "").toLowerCase();
+  if (p.endsWith(".cjs") || p.includes("node-worker")) return "node";
+  if (p.endsWith(".js") || p.endsWith(".mjs") || p.endsWith(".wasm")) return "web";
+  return "native";
 }
 
 // -------------------- Polyfills --------------------
@@ -107,7 +110,7 @@ function initProgress(id: string, total: number) {
     total,
     done: 0,
     percent: 0,
-    stage: "preparing", // [FIX] сразу ставим preparing
+    stage: "preparing",
     startedAt: now,
     updatedAt: now,
   });
@@ -131,7 +134,6 @@ app.get("/api/v1/progress/:id", (req, res) => {
   const id = req.params.id;
   let p = PROGRESS.get(id);
   if (!p) {
-    // [FIX] не ломаем текущую логику клиента — возвращаем placeholder
     const now = Date.now();
     p = {
       id,
@@ -146,6 +148,172 @@ app.get("/api/v1/progress/:id", (req, res) => {
   }
   res.json(p);
 });
+
+// -------------------- helpers: ratings normalization --------------------
+type PlayersRatings = { white?: number; black?: number };
+function normalizePlayersRatings(src: any): PlayersRatings | undefined {
+  if (!src || typeof src !== "object") return undefined;
+
+  const pr =
+    src.playersRatings && typeof src.playersRatings === "object"
+      ? src.playersRatings
+      : src;
+
+  const w =
+    Number.isFinite(pr.white) ? Number(pr.white)
+      : Number.isFinite(pr.whiteElo) ? Number(pr.whiteElo)
+      : Number.isFinite(pr?.white?.elo) ? Number(pr.white.elo)
+      : Number.isFinite(src.whiteElo) ? Number(src.whiteElo)
+      : Number.isFinite(src?.white?.elo) ? Number(src.white.elo)
+      : undefined;
+
+  const b =
+    Number.isFinite(pr.black) ? Number(pr.black)
+      : Number.isFinite(pr.blackElo) ? Number(pr.blackElo)
+      : Number.isFinite(pr?.black?.elo) ? Number(pr.black.elo)
+      : Number.isFinite(src.blackElo) ? Number(src.blackElo)
+      : Number.isFinite(src?.black?.elo) ? Number(src.black.elo)
+      : undefined;
+
+  if (typeof w === "number" || typeof b === "number") {
+    return { white: w, black: b };
+  }
+  return undefined;
+}
+
+type EvaluateGameParamsExt = EvaluateGameParams & { playersRatings?: PlayersRatings };
+
+// -------------------- NATIVE UCI ENGINE --------------------
+type UciLine = { pv: string[]; cp?: number; mate?: number; depth?: number; multiPv?: number };
+type UciPosEval = { lines: UciLine[]; bestMove?: string };
+
+type EvaluatePositionWithUpdateParamsExt = EvaluatePositionWithUpdateParams & {
+  threads?: number;
+  hashMb?: number;
+  syzygyPath?: string;
+};
+
+class NativeUciEngine {
+  constructor(private readonly binPath: string) {
+    if (!binPath) throw new Error("ENGINE_PATH/STOCKFISH_PATH is not set");
+  }
+
+  private send(proc: ChildProcessWithoutNullStreams, cmd: string) {
+    proc.stdin.write(cmd + "\n");
+  }
+
+  private parseInfoLine(s: string): UciLine | null {
+    const get = (key: string) => {
+      const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
+      const m = s.match(re);
+      return m ? Number(m[1]) : undefined;
+    };
+    const depth = get("depth");
+    const multiPv = get("multipv") ?? get("multiPv");
+    const mate = get("mate");
+    const cp = mate === undefined ? get("cp") : undefined;
+    const pvIdx = s.indexOf(" pv ");
+    const pv = pvIdx >= 0 ? s.slice(pvIdx + 4).trim().split(/\s+/) : [];
+    if (!multiPv) return null;
+    const line: UciLine = { pv, depth, multiPv };
+    if (typeof mate === "number") line.mate = mate;
+    if (typeof cp === "number") line.cp = cp;
+    return line;
+  }
+
+  async evaluatePositionWithUpdate(params: EvaluatePositionWithUpdateParamsExt): Promise<UciPosEval> {
+    const { fen, depth, multiPv } = params;
+    const proc = spawn(this.binPath, [], { stdio: ["pipe", "pipe", "pipe"] });
+
+    const lines: Record<number, UciLine> = {};
+    let bestMove: string | undefined;
+
+    const onData = (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      for (const raw of text.split(/\r?\n/)) {
+        const s = raw.trim();
+        if (!s) continue;
+        if (s.startsWith("info ")) {
+          const m = this.parseInfoLine(s);
+          if (m?.multiPv) lines[m.multiPv] = m;
+        } else if (s.startsWith("bestmove ")) {
+          const parts = s.split(/\s+/);
+          bestMove = parts[1];
+        }
+      }
+    };
+
+    proc.stdout.on("data", onData);
+    proc.stderr.on("data", (b) => log.debug({ engineErr: String(b) }));
+
+    this.send(proc, "uci");
+    if (Number.isFinite(params.threads)) this.send(proc, `setoption name Threads value ${params.threads}`);
+    if (Number.isFinite(params.hashMb)) this.send(proc, `setoption name Hash value ${params.hashMb}`);
+    if (params.syzygyPath) this.send(proc, `setoption name SyzygyPath value ${params.syzygyPath}`);
+    this.send(proc, `setoption name MultiPV value ${Math.max(1, multiPv || 1)}`);
+    this.send(proc, "isready");
+    this.send(proc, "ucinewgame");
+    this.send(proc, `position fen ${fen}`);
+    this.send(proc, `go depth ${Math.max(1, depth || DEFAULT_DEPTH)} multipv ${Math.max(1, multiPv || 1)}`);
+
+    await new Promise<void>((resolve) => {
+      const handler = (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("bestmove")) {
+          proc.stdout.off("data", handler);
+          resolve();
+        }
+      };
+      proc.stdout.on("data", handler);
+    });
+
+    try { proc.stdin.end("quit\n"); } catch {}
+    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+
+    const ordered = Object.values(lines).sort((a, b) => (a.multiPv! - b.multiPv!));
+    return { lines: ordered, bestMove };
+  }
+
+  async evaluateGame(params: EvaluateGameParams, onProgress?: (percent: number) => void): Promise<GameEval> {
+    const { fens, depth, multiPv } = params;
+    const outPositions: any[] = [];
+    const total = fens.length;
+    for (let i = 0; i < total; i++) {
+      const fen = fens[i];
+      const r = await this.evaluatePositionWithUpdate({
+        fen,
+        depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
+        multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
+      });
+      outPositions.push({ ...r });
+      if (onProgress) onProgress(((i + 1) / total) * 100);
+    }
+
+    const gameEval: GameEval = {
+      positions: outPositions,
+      acpl: { white: 0, black: 0 },
+      settings: {
+        engine: "stockfish-native",
+        depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
+        multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
+      } as any,
+    } as any;
+
+    return gameEval;
+  }
+
+  static async create(): Promise<NativeUciEngine> {
+    const candidate = path.resolve(ENGINE_PATH);
+    if (!fs.existsSync(candidate)) {
+      throw new Error(`Stockfish binary not found at ENGINE_PATH=${candidate}`);
+    }
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+    } catch {
+      log.warn(`Binary at ${candidate} may not be executable. Run: chmod +x "${candidate}"`);
+    }
+    return new NativeUciEngine(candidate);
+  }
+}
 
 // -------------------- position eval --------------------
 app.post("/api/evaluate/position", async (req, res) => {
@@ -167,7 +335,6 @@ app.post("/api/evaluate/position", async (req, res) => {
   }
 });
 
-// alias (клиент ждёт этот путь)
 app.post("/api/v1/evaluate/position", (req, res) => {
   (app as any)._router.handle(
     { ...req, url: "/api/evaluate/position", originalUrl: "/api/evaluate/position" },
@@ -178,17 +345,14 @@ app.post("/api/v1/evaluate/position", (req, res) => {
 
 // -------------------- game eval with progress --------------------
 app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
-  // [FIX] берём progressId и из query, и из body
   const progressId = String((req.query as any)?.progressId ?? req.body?.progressId ?? "");
   try {
     const body = req.body ?? {};
     const fens = Array.isArray(body.fens) ? body.fens : [];
     const uciMoves = Array.isArray(body.uciMoves) ? body.uciMoves : [];
 
-    // [FIX] инициализируем прогресс СРАЗУ, даже если была гонка с поллером
     if (progressId) initProgress(progressId, fens.length || 0);
 
-    // поддержка depth/multiPv из query (клиент кладёт их в query)
     const depthQ = Number((req.query as any)?.depth);
     const multiPvQ = Number((req.query as any)?.multiPv);
     const depth =
@@ -199,30 +363,22 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
       Number.isFinite(multiPvQ) ? multiPvQ : DEFAULT_MULTIPV;
 
     if (!Array.isArray(fens) || fens.length < 2) {
-      if (progressId) setProgress(progressId, { stage: "done" }); // [FIX] не вешаем оверлей
+      if (progressId) setProgress(progressId, { stage: "done" });
       return res.status(400).json({ error: "invalid_fens" });
     }
 
     const engine = await getEngine();
     if (progressId) setProgress(progressId, { stage: "evaluating", done: 0 });
 
-    const params: EvaluateGameParams = {
+    const playersRatings = normalizePlayersRatings(body);
+
+    const params: EvaluateGameParamsExt = {
       fens,
       uciMoves,
       depth,
       multiPv,
       workersNb: Number.isFinite(body.workersNb) ? Number(body.workersNb) : 1,
-      playersRatings:
-        body.playersRatings && typeof body.playersRatings === "object"
-          ? {
-              white: Number.isFinite(body.playersRatings.white)
-                ? Number(body.playersRatings.white)
-                : undefined,
-              black: Number.isFinite(body.playersRatings.black)
-                ? Number(body.playersRatings.black)
-                : undefined,
-            }
-          : undefined,
+      playersRatings,
     };
 
     const onProgress =
@@ -243,22 +399,46 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 
     const positions: ClientPosition[] = fens.map((fen: string, idx: number) => {
       const posAny: any = (out.positions as any[])[idx] ?? {};
-      const lines: ClientLine[] = Array.isArray(posAny?.lines)
-        ? posAny.lines.map((l: any) => ({
-            pv: Array.isArray(l?.pv) ? l.pv : [],
-            cp: typeof l?.cp === "number" ? l.cp : undefined,
-            mate: typeof l?.mate === "number" ? l.mate : undefined,
-          }))
-        : [];
-      if (lines[0]) {
-        lines[0].best = String((posAny as any)?.bestMove ?? lines[0].pv?.[0] ?? "");
+      const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
+
+      const lines: ClientLine[] = rawLines.map((l: any) => {
+        const pv: string[] = Array.isArray(l?.pv)
+          ? l.pv
+          : Array.isArray(l?.pv?.moves)
+          ? l.pv.moves
+          : [];
+        const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
+        const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
+        // критично: если нет ни cp, ни mate — ставим cp:0
+        const cpFixed = cpVal == null && mateVal == null ? 0 : cpVal;
+        return { pv, cp: cpFixed, mate: mateVal };
+      });
+
+      // если нет ни одной линии — создаём заглушку
+      if (lines.length === 0) {
+        lines.push({ pv: [], cp: 0, best: "" });
       }
+
+      // лучший ход для первой линии (если известен)
+      const firstPv = lines[0]?.pv;
+      const best =
+        (posAny as any)?.bestMove ??
+        (Array.isArray(firstPv) ? firstPv[0] : undefined) ??
+        "";
+
+      if (lines[0]) {
+        lines[0].best = String(best);
+      }
+
       return { fen: String(fen ?? ""), idx, lines };
     });
 
-    const winPercents: number[] = (positions as any[]).map((p) =>
-      getPositionWinPercentage(p as any)
-    );
+    const winPercents: number[] = (positions as any[]).map((p: any) => {
+      const first = p?.lines?.[0];
+      const hasEval =
+        first && (typeof first.cp === "number" || typeof first.mate === "number");
+      return hasEval ? getPositionWinPercentage(p as any) : 50;
+    });
 
     const { white, black } = computeAccuracyStrict(winPercents);
     const accuracy = {
@@ -290,9 +470,14 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 
     const acpl = out.acpl ?? { white: 0, black: 0 };
     const estRaw = computeEstimatedElo(positions as any, undefined, undefined) as any;
+
+    const toIntOrNull = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.round(n) : null;
+    };
     const estimatedElo = {
-      whiteEst: estRaw?.whiteEst ?? estRaw?.white ?? null,
-      blackEst: estRaw?.blackEst ?? estRaw?.black ?? null,
+      whiteEst: toIntOrNull(estRaw?.whiteEst ?? estRaw?.white),
+      blackEst: toIntOrNull(estRaw?.blackEst ?? estRaw?.black),
     };
 
     const fullReport = {
@@ -306,12 +491,12 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
       },
       estimatedElo,
       analysisLog: [
-        `engine=${out?.settings?.engine ?? "stockfish"}`,
-        `depth=${out?.settings?.depth ?? depth}`,
-        `multiPv=${out?.settings?.multiPv ?? multiPv}`,
+        `engine=${(out as any)?.settings?.engine ?? "stockfish-native"}`,
+        `depth=${(out as any)?.settings?.depth ?? depth}`,
+        `multiPv=${(out as any)?.settings?.multiPv ?? multiPv}`,
         `positions=${positions.length}`,
       ],
-      settings: out.settings,
+      settings: (out as any).settings,
     };
 
     if (progressId) setProgress(progressId, { stage: "done", done: fens.length });
@@ -328,30 +513,24 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 // -------------------- game eval by PGN --------------------
 app.post("/api/evaluate/game", async (req, res) => {
   try {
-    const { pgn, depth, multiPv, playersRatings, workersNb } = req.body ?? {};
+    const { pgn, depth, multiPv, workersNb } = req.body ?? {};
     if (!pgn || typeof pgn !== "string") {
       return res.status(400).json({ error: "pgn_required" });
     }
     const { fens, uciMoves } = pgnToFenAndUci(pgn);
     const engine = await getEngine();
-    const params: EvaluateGameParams = {
+
+    const playersRatings = normalizePlayersRatings(req.body);
+
+    const params: EvaluateGameParamsExt = {
       fens,
       uciMoves,
       depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
       multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
       workersNb: Number.isFinite(workersNb) ? Number(workersNb) : 1,
-      playersRatings:
-        playersRatings && typeof playersRatings === "object"
-          ? {
-              white: Number.isFinite(playersRatings.white)
-                ? Number(playersRatings.white)
-                : undefined,
-              black: Number.isFinite(playersRatings.black)
-                ? Number(playersRatings.black)
-                : undefined,
-            }
-          : undefined,
+      playersRatings,
     };
+
     const out: GameEval = await engine.evaluateGame(params);
     res.json(out);
   } catch (e: any) {
@@ -362,13 +541,13 @@ app.post("/api/evaluate/game", async (req, res) => {
 // -------------------- pgn→fens --------------------
 function pgnToFenAndUci(pgn: string): { fens: string[]; uciMoves: string[] } {
   const chess = new Chess();
-  chess.loadPgn(pgn); // без { sloppy: true } — типобезопасно
+  chess.loadPgn(pgn);
 
   const fens: string[] = [chess.fen()];
   const uciMoves: string[] = [];
 
-  for (const move of chess.history({ verbose: true })) {
-    const uci = `${(move as any).from}${(move as any).to}${(move as any).promotion ?? ""}`;
+  for (const move of chess.history({ verbose: true }) as any[]) {
+    const uci = `${move.from}${move.to}${move.promotion ?? ""}`;
     uciMoves.push(uci);
     chess.move(move as any);
     fens.push(chess.fen());
@@ -377,16 +556,26 @@ function pgnToFenAndUci(pgn: string): { fens: string[]; uciMoves: string[] } {
 }
 
 // -------------------- engine lifecycle --------------------
-let engineInstance: UciEngine | null = null;
-let enginePromise: Promise<UciEngine> | null = null;
+type EngineIface = {
+  evaluatePositionWithUpdate: (p: EvaluatePositionWithUpdateParams) => Promise<{ lines: any[]; bestMove?: string }>;
+  evaluateGame: (p: EvaluateGameParams, onProgress?: (p: number) => void) => Promise<GameEval>;
+};
 
-async function getEngine(): Promise<UciEngine> {
+let engineInstance: EngineIface | null = null;
+let enginePromise: Promise<EngineIface> | null = null;
+
+async function getEngine(): Promise<EngineIface> {
   if (engineInstance) return engineInstance;
   if (!enginePromise) {
     enginePromise = (async () => {
-      const eng = await UciEngine.create(ENGINE_NAME, ENGINE_PATH);
-      engineInstance = eng;
-      return eng;
+      const eng = await NativeUciEngine.create();
+      const adapted: EngineIface = {
+        evaluatePositionWithUpdate: (p) =>
+          eng.evaluatePositionWithUpdate(p as EvaluatePositionWithUpdateParamsExt),
+        evaluateGame: (p, onProgress) => eng.evaluateGame(p, onProgress),
+      };
+      engineInstance = adapted;
+      return adapted;
     })();
   }
   return enginePromise;
@@ -513,5 +702,5 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   const mode = detectSpawnMode(ENGINE_PATH);
-  log.info(`Server http://localhost:${PORT} | Engine=${ENGINE_NAME} | Mode=${mode}`);
+  log.info(`Server http://localhost:${PORT} | Engine=${ENGINE_NAME} | Mode=${mode} | Bin=${ENGINE_PATH}`);
 });

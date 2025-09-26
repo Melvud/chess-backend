@@ -1,20 +1,24 @@
 import { ceilsNumber } from "@/lib/math";
-import { LineEval, PositionEval } from "@/types/eval";
+import type { LineEval, PositionEval } from "@/types/eval";
 
 export const getPositionWinPercentage = (position: PositionEval): number => {
-  return getLineWinPercentage(position.lines[0]);
+  const first = position?.lines?.[0];
+  // Если линий нет — считаем равенство (50%)
+  if (!first) return 50;
+  return getLineWinPercentage(first);
 };
 
-export const getLineWinPercentage = (line: LineEval): number => {
+export const getLineWinPercentage = (line?: LineEval): number => {
+  if (!line) return 50;
+
   if (line.cp !== undefined) {
     return getWinPercentageFromCp(line.cp);
   }
-
   if (line.mate !== undefined) {
     return getWinPercentageFromMate(line.mate);
   }
-
-  throw new Error("No cp or mate in line");
+  // Нет ни cp, ни mate — тоже нейтрально
+  return 50;
 };
 
 const getWinPercentageFromMate = (mate: number): number => {

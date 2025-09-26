@@ -1,16 +1,16 @@
 // src/lib/engine/uciEngine.ts
-import WebWorker from "web-worker";
 import type { EngineName } from "@/types/enums";
 import type {
-  EvaluateGameParams,
+  EvaluateGameParams as EvaluateGameParamsBase,
   EvaluatePositionWithUpdateParams,
   GameEval,
   PositionEval,
 } from "@/types/eval";
 
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-import fs from "node:fs/promises";
+import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
+import * as path from "node:path";
+import * as fs from "node:fs";
+import os from "node:os";
 
 /** Префикс для консольных логов этого модуля */
 const L = (scope: string, extra?: unknown) =>
@@ -29,465 +29,302 @@ const __LOG_LW = LW;
 const __LOG_LE = LE;
 
 /* ------------------------------------------------------------------ */
-/* Разрешение путей/режимов запуска                                   */
+/* Расширения типов                                                    */
 /* ------------------------------------------------------------------ */
 
-type SpawnMode = "node" | "web";
+type PlayersRatings = { white?: number; black?: number };
 
-/** Определяем, нужно ли запускать воркер как node worker_threads */
-function detectSpawnMode(enginePublicPath: string): SpawnMode {
-  const p = enginePublicPath.toLowerCase();
-  if (p.endsWith(".cjs") || p.includes("node-worker")) return "node";
-  return "web";
+/** Базовый тип из вашего проекта + локальное расширение полем playersRatings */
+type EvaluateGameParams = EvaluateGameParamsBase & {
+  playersRatings?: PlayersRatings;
+};
+
+/* ------------------------------------------------------------------ */
+/* Вспомогательные утилиты                                             */
+/* ------------------------------------------------------------------ */
+
+const ENGINE_PATH =
+    process.env.STOCKFISH_PATH || path.resolve("./bin/stockfish");
+const DEFAULT_DEPTH = Number.isFinite(Number(process.env.ENGINE_DEPTH))
+  ? Number(process.env.ENGINE_DEPTH)
+  : 16;
+const DEFAULT_MULTIPV = Number.isFinite(Number(process.env.ENGINE_MULTIPV))
+  ? Number(process.env.ENGINE_MULTIPV)
+  : 3;
+const DEFAULT_THREADS = Math.max(1, Math.min(4, (os.cpus()?.length ?? 2) - 1));
+const DEFAULT_HASH_MB = Number.isFinite(Number(process.env.ENGINE_HASH_MB))
+  ? Number(process.env.ENGINE_HASH_MB)
+  : 256;
+
+type LineEval = {
+  pv: string[];
+  cp?: number;
+  mate?: number;
+  depth?: number;
+  multiPv?: number;
+};
+
+function parseInfoLine(s: string): LineEval | null {
+  const get = (key: string) => {
+    const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
+    const m = s.match(re);
+    return m ? Number(m[1]) : undefined;
+  };
+  const depth = get("depth");
+  const multiPv = get("multipv") ?? get("multiPv");
+  const mate = get("mate");
+  const cp = mate === undefined ? get("cp") : undefined;
+  const pvIdx = s.indexOf(" pv ");
+  const pv = pvIdx >= 0 ? s.slice(pvIdx + 4).trim().split(/\s+/) : [];
+  if (!multiPv) return null;
+  const line: LineEval = { pv, depth, multiPv };
+  if (typeof mate === "number") line.mate = mate;
+  if (typeof cp === "number") line.cp = cp;
+  return line;
 }
 
-/** Для web: public-путь → file:// URL. Для node: public-путь → абсолютный FS-путь */
-function resolveEngineEntry(enginePublicPath: string, mode: SpawnMode): string {
-  const clean = enginePublicPath.replace(/^\/+/, "");
-  const absFsPath = path.resolve(process.cwd(), "public", clean);
-  if (mode === "web") {
-    const url = pathToFileURL(absFsPath).toString();
-    LI("resolveEngineEntry:web", { absFsPath, url });
-    return url;
-  }
-  LI("resolveEngineEntry:node", { absFsPath });
-  return absFsPath;
-}
-
-/** Подстраховка браузерных глобалов и fetch(file://...) в Node (используем только для web режима) */
-function ensureNodeLikeBrowserGlobals(workerFileUrl: string) {
-  L("ensureNodeLikeBrowserGlobals:start", { workerFileUrl });
-  const g = globalThis as any;
-  if (typeof g.window === "undefined") {
-    g.window = g;
-    L("ensureNodeLikeBrowserGlobals:set", "window");
-  }
-  if (typeof g.self === "undefined") {
-    g.self = g;
-    L("ensureNodeLikeBrowserGlobals:set", "self");
-  }
-  if (typeof g.location === "undefined") {
-    try {
-      g.location = new URL(workerFileUrl);
-      L("ensureNodeLikeBrowserGlobals:set", { location: g.location?.href });
-    } catch {
-      g.location = new URL("file:///");
-      L("ensureNodeLikeBrowserGlobals:setFallback", { location: g.location?.href });
-    }
-  }
-  if (typeof g.navigator === "undefined") {
-    g.navigator = { userAgent: "node" };
-    L("ensureNodeLikeBrowserGlobals:set", "navigator");
-  }
-
-  if (typeof g.fetch === "undefined") {
-    L("ensureNodeLikeBrowserGlobals:patchFetch");
-    g.fetch = async (input: any) => {
-      const u = new URL(String(input), g.location?.href ?? "file:///");
-      if (u.protocol === "file:") {
-        const started = Date.now();
-        const buf = await fs.readFile(u, "utf8");
-        const took = Date.now() - started;
-        LI("fetch:file", { href: u.href, tookMs: took, bytes: buf.length });
-        return new Response(new Blob([buf]), { status: 200, statusText: "OK" });
+function waitForBestmove(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  return new Promise((resolve) => {
+    const handler = (chunk: Buffer) => {
+      if (chunk.toString("utf8").includes("bestmove")) {
+        proc.stdout.off("data", handler);
+        resolve();
       }
-      LW("fetch:unsupported", { href: u.href, protocol: u.protocol });
-      throw new Error("fetch is not available");
     };
-  }
+    proc.stdout.on("data", handler);
+  });
 }
 
 /* ------------------------------------------------------------------ */
-/* Адаптер: выравниваем API воркера под addEventListener/removeEvent… */
-/* ------------------------------------------------------------------ */
-
-type WorkerLike = {
-  postMessage: (data: any) => void;
-  terminate: () => any;
-  addEventListener: (type: "message" | "error" | "messageerror", listener: (ev: any) => void) => void;
-  removeEventListener: (type: "message" | "error" | "messageerror", listener: (ev: any) => void) => void;
-};
-
-/** Обёртка над worker_threads.Worker с интерфейсом как у WebWorker (ESM-совместимо, без require) */
-async function makeNodeWorkerWrapper(absPath: string): Promise<WorkerLike> {
-  const { Worker: NodeWorker } = await import("node:worker_threads");
-  const w = new NodeWorker(absPath, { eval: false });
-
-  const listeners = {
-    message: new Set<(ev: any) => void>(),
-    error: new Set<(ev: any) => void>(),
-    messageerror: new Set<(ev: any) => void>(),
-  };
-
-  const onMessage = (data: any) => {
-    // Выравниваем под WebWorker: передаём { data }
-    listeners.message.forEach((fn) => {
-      try {
-        fn({ data });
-      } catch {
-        /* noop */
-      }
-    });
-  };
-  const onError = (err: any) => {
-    const evt = { message: err?.message, error: err };
-    listeners.error.forEach((fn) => {
-      try {
-        fn(evt);
-      } catch {
-        /* noop */
-      }
-    });
-  };
-
-  w.on("message", onMessage);
-  w.on("error", onError);
-
-  return {
-    postMessage: (data: any) => w.postMessage(data),
-    terminate: () => w.terminate(),
-    addEventListener: (type, listener) => {
-      (listeners as any)[type]?.add(listener);
-    },
-    removeEventListener: (type, listener) => {
-      (listeners as any)[type]?.delete(listener);
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Протокол сообщений                                                  */
-/* ------------------------------------------------------------------ */
-
-type EngineReadyMsg = { type: "ready" };
-type EngineProgressMsg = { id?: string; type: "progress"; value: number };
-type EngineLogMsg = { type: "log"; payload: unknown };
-type EngineErrorMsg = { type: "error"; error: string };
-
-type EngineResultMsg<T> = { id: string; type: "result"; payload: T };
-type EngineRejectedMsg = { id: string; type: "rejected"; error?: string };
-
-/** Legacy-ответы некоторых воркеров */
-type EngineLegacyResultMsg<T> = { id: string; result?: T; error?: string };
-
-type EngineMessage<T = unknown> =
-  | EngineReadyMsg
-  | EngineProgressMsg
-  | EngineLogMsg
-  | EngineErrorMsg
-  | EngineResultMsg<T>
-  | EngineRejectedMsg
-  | EngineLegacyResultMsg<T>;
-
-type EngineCallPayload =
-  | {
-      type: "evaluate-position";
-      params: EvaluatePositionWithUpdateParams & { progressId?: string };
-    }
-  | {
-      type: "evaluate-game";
-      params: EvaluateGameParams & { progressId?: string };
-    }
-  | { type: "next-move"; params: { fen: string; elo?: number; depth?: number } }
-  | { type: "stop"; params: Record<string, never> };
-
-type EngineRequest<
-  TType extends EngineCallPayload["type"] = EngineCallPayload["type"],
-> = {
-  id: string;
-  type: TType;
-  // FIX: воркер ожидает "params", а не "payload"
-  params: Extract<EngineCallPayload, { type: TType }>["params"];
-};
-
-/** Аккуратный парсер: поддержка строковых JSON-сообщений от воркера */
-function normalizeMessage<T = unknown>(ev: MessageEvent): EngineMessage<T> | null {
-  const raw = (ev as any).data;
-  L(
-    "normalizeMessage:raw",
-    typeof raw === "string" ? raw.slice(0, 200) + (String(raw).length > 200 ? "…" : "") : raw,
-  );
-  let d: any = raw;
-  if (d == null) return null;
-
-  if (typeof d === "string") {
-    try {
-      const parsed = JSON.parse(d);
-      L("normalizeMessage:parsedJSON", parsed);
-      if (parsed && typeof parsed === "object") return parsed as EngineMessage<T>;
-      return { type: "log", payload: d } as EngineLogMsg as any;
-    } catch {
-      LW("normalizeMessage:nonJSONString");
-      return { type: "log", payload: d } as EngineLogMsg as any;
-    }
-  }
-
-  if (typeof d === "object") {
-    L("normalizeMessage:object", d);
-    return d as EngineMessage<T>;
-  }
-
-  LW("normalizeMessage:unknownType", { typeof: typeof d });
-  return { type: "log", payload: d } as EngineLogMsg as any;
-}
-
-/* ------------------------------------------------------------------ */
-/* Основной класс                                                      */
+/* Основной класс — публичный API оставлен прежним                     */
 /* ------------------------------------------------------------------ */
 
 export class UciEngine {
-  private worker!: WorkerLike;
   private engineName!: EngineName;
+  private currentProc: ChildProcessWithoutNullStreams | null = null;
 
-  /** Привязки onProgress по id активных запросов */
-  private progressCallbacks = new Map<string, (value: number) => void>();
-
-  // --- ВНУТРЕННИЕ ОБЁРТКИ ДЛЯ ЛОГГЕРА (не меняют существующую схему логов) ---
+  // --- логи совместимы с исходником ---
   private L(scope: string, extra?: unknown): void {
-    try { __LOG_L(scope, extra); } catch {}
+    try {
+      __LOG_L(scope, extra);
+    } catch {}
   }
   private LI(scope: string, extra?: unknown): void {
-    try { __LOG_LI(scope, extra); } catch {}
+    try {
+      __LOG_LI(scope, extra);
+    } catch {}
   }
   private LW(scope: string, extra?: unknown): void {
-    try { __LOG_LW(scope, extra); } catch {}
+    try {
+      __LOG_LW(scope, extra);
+    } catch {}
   }
   private LE(scope: string, extra?: unknown): void {
-    try { __LOG_LE(scope, extra); } catch {}
+    try {
+      __LOG_LE(scope, extra);
+    } catch {}
   }
 
   private constructor(engineName: EngineName) {
     this.engineName = engineName;
   }
 
-  /** Асинхронная инициализация: создаём воркер в нужном режиме и навешиваем слушатели */
-  private async init(enginePublicPath: string): Promise<void> {
-    LI("constructor:start", { engineName: this.engineName, enginePublicPath });
-    const mode = detectSpawnMode(enginePublicPath);
-    const entry = resolveEngineEntry(enginePublicPath, mode);
-
-    if (mode === "web") {
-      ensureNodeLikeBrowserGlobals(entry);
-      LI("constructor:spawnWorker:web", { fileUrl: entry });
-      this.worker = new WebWorker(entry as any) as unknown as WorkerLike;
-    } else {
-      LI("constructor:spawnWorker:node", { absPath: entry });
-      this.worker = await makeNodeWorkerWrapper(entry);
-    }
-
-    // Глобальный listener: прогресс/log/error
-    this.worker.addEventListener("message", (ev: MessageEvent<EngineMessage>) => {
-      const msg = normalizeMessage(ev);
-      if (!msg || typeof msg !== "object") return;
-
-      if ((msg as any).type && (msg as any).type !== "progress") {
-        L("worker.onmessage", msg);
-      }
-
-      if ((msg as any).type === "progress") {
-        const { id, value } = msg as EngineProgressMsg;
-        const v = Number(value) || 0;
-        if (id && this.progressCallbacks.has(id)) {
-          const cb = this.progressCallbacks.get(id)!;
-          try {
-            cb(v);
-          } catch (err) {
-            this.LE("progressCallback:error", err);
-          }
-        } else if (this.progressCallbacks.size === 1) {
-          // fallback: если id отсутствует, но активен ровно один запрос
-          const iter = this.progressCallbacks.values();
-          const only = iter.next().value as (x: number) => void;
-          if (only) {
-            try {
-              only(v);
-            } catch (err) {
-              this.LE("progressCallback:fallbackError", err);
-            }
-          }
-        } else {
-          this.LW("progress:unmatched", { id, value, active: this.progressCallbacks.size });
-        }
-      } else if ((msg as any).type === "log") {
-        console.debug(`[${this.engineName}]`, (msg as EngineLogMsg).payload);
-      } else if ((msg as any).type === "error") {
-        console.error(`[${this.engineName}]`, (msg as EngineErrorMsg).error);
-      } else if ((msg as any).type === "ready") {
-        this.LI("worker:ready");
-      }
-    });
-
-    this.worker.addEventListener("error", (e: any) => {
-      this.LE("worker.onerror", { message: e?.message, stack: e?.error?.stack });
-    });
-
-    this.worker.addEventListener("messageerror", (e: any) => {
-      this.LE("worker.messageerror", { data: e?.data });
-    });
-
-    LI("constructor:done");
-  }
-
-  /** Фабрика — теперь дожидается асинхронного init */
-  static async create(engineName: EngineName, enginePublicPath: string): Promise<UciEngine> {
-    LI("create:begin", { engineName, enginePublicPath });
-    const started = Date.now();
+  /** Фабрика — сохраняем совместимую сигнатуру */
+  static async create(engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
     const eng = new UciEngine(engineName);
-    await eng.init(enginePublicPath);
-    const took = Date.now() - started;
-    LI("create:done", { tookMs: took });
+    eng.ensureBinary();
+    LI("create:native", { engineName, bin: ENGINE_PATH });
     return eng;
   }
 
-  private call<TResp = unknown>(
-    type: EngineCallPayload["type"],
-    payload?: EngineCallPayload extends { type: typeof type; params: infer P } ? P : any,
-    onProgress?: (value: number) => void,
-  ): Promise<TResp> {
-    const id = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-
-    // если есть onProgress — добавим progressId в payload, если его там нет
-    const withProgressId =
-      onProgress && payload && typeof payload === "object" && !("progressId" in (payload as any))
-        ? { ...(payload as any), progressId: id }
-        : payload;
-
-    const progressKey = (withProgressId as any)?.progressId ?? id;
-    if (onProgress) {
-      this.progressCallbacks.set(progressKey, onProgress);
-      this.L("call:progressAttached", { id: progressKey });
+  private ensureBinary() {
+    const bin = path.resolve(ENGINE_PATH);
+    if (!fs.existsSync(bin)) {
+      throw new Error(`Stockfish binary not found at ${bin}. Set ENGINE_PATH or STOCKFISH_PATH.`);
     }
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+    } catch {
+      this.LW("binary:notExecutable", { bin, hint: `chmod +x "${bin}"` });
+    }
+  }
 
-    // FIX: отправляем "params", не "payload"
-    const req: EngineRequest = { id, type, params: withProgressId } as EngineRequest;
-    this.L("call:postMessage", { id, type });
-
-    return new Promise<TResp>((resolve, reject) => {
-      const started = Date.now();
-
-      const handleMessage = (ev: MessageEvent<EngineMessage<TResp>>) => {
-        const msg = normalizeMessage<TResp>(ev);
-        if (!msg || typeof msg !== "object") return;
-
-        // прогресс из worker приходит с id = progressKey
-        if ((msg as any).type === "progress" && (msg as any).id === progressKey) {
-          const value = Number((msg as any).value ?? 0);
-          const cb = this.progressCallbacks.get(progressKey);
-          if (cb) cb(value);
-          return;
-        }
-
-        // финальный ответ — по id вызова
-        if ((msg as any).id === id) {
-          // Legacy формат: { id, result }
-          if ("result" in (msg as any)) {
-            this.worker.removeEventListener("message", handleMessage);
-            const took = Date.now() - started;
-            this.LI("call:resolve", { id, tookMs: took });
-            // @ts-ignore
-            resolve((msg as any).result as TResp);
-            return;
-          }
-          // Новый формат: { id, type: "result", payload }
-          if ((msg as any).type === "result" && "payload" in (msg as any)) {
-            this.worker.removeEventListener("message", handleMessage);
-            const took = Date.now() - started;
-            this.LI("call:resolve", { id, tookMs: took });
-            resolve((msg as any).payload as TResp);
-            return;
-          }
-          // Запрос отвергнут: { id, type: "rejected", error? }
-          if ((msg as any).type === "rejected") {
-            this.worker.removeEventListener("message", handleMessage);
-            this.LE("call:reject", { id, err: (msg as any).error });
-            reject(new Error(String((msg as any).error ?? "engine_rejected")));
-            return;
-          }
-          // Некоторые воркеры могут слать { id, type: "error", error }
-          if ((msg as any).type === "error" && "error" in (msg as any)) {
-            this.worker.removeEventListener("message", handleMessage);
-            this.LE("call:reject", { id, err: (msg as any).error });
-            reject(new Error(String((msg as any).error ?? "engine_error")));
-            return;
-          }
-        }
-      };
-
-      const handleError = (e: any) => {
-        try { this.worker.removeEventListener("message", handleMessage); } catch {}
-        this.LE("call:reject", { id, err: e });
-        reject(e);
-      };
-
-      this.worker.addEventListener("message", handleMessage);
-      try {
-        this.worker.postMessage(req);
-      } catch (e) {
-        handleError(e);
-      }
+  private spawnEngine(): ChildProcessWithoutNullStreams {
+    const bin = path.resolve(ENGINE_PATH);
+    const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
+    this.currentProc = proc;
+    proc.on("exit", (code, sig) => {
+      this.L("proc.exit", { code, sig });
+      if (this.currentProc === proc) this.currentProc = null;
     });
+    proc.stderr.on("data", (b) => this.L("proc.stderr", String(b)));
+    return proc;
+  }
+
+  private send(proc: ChildProcessWithoutNullStreams, cmd: string) {
+    this.L("uci.send", cmd);
+    proc.stdin.write(cmd + "\n");
   }
 
   /** Позиционная оценка с периодическими обновлениями */
-  evaluatePositionWithUpdate(
+  async evaluatePositionWithUpdate(
     params: EvaluatePositionWithUpdateParams,
     onProgress?: (value: number) => void,
   ): Promise<PositionEval> {
-    LI("evaluatePositionWithUpdate:start", {
-      hasProgress: !!onProgress,
-      depth: (params as any)?.depth,
-      multiPv: (params as any)?.multiPv,
+    const { fen } = params;
+    const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
+    const multiPv = Number.isFinite(params.multiPv) ? Number(params.multiPv) : DEFAULT_MULTIPV;
+    const threads = Number.isFinite((params as any).threads) ? Number((params as any).threads) : DEFAULT_THREADS;
+    const hashMb = Number.isFinite((params as any).hashMb) ? Number((params as any).hashMb) : DEFAULT_HASH_MB;
+    const syzygyPath = (params as any).syzygyPath as string | undefined;
+
+    const proc = this.spawnEngine();
+    const lines: Record<number, LineEval> = {};
+    let bestMove: string | undefined;
+
+    let lastDepthReported = 0;
+    proc.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      for (const raw of text.split(/\r?\n/)) {
+        const s = raw.trim();
+        if (!s) continue;
+        if (s.startsWith("info ")) {
+          const m = parseInfoLine(s);
+          if (m?.multiPv) {
+            lines[m.multiPv] = m;
+            if (onProgress && m.depth && m.depth !== lastDepthReported) {
+              lastDepthReported = m.depth;
+              // грубый прогресс по глубине (0..depth)
+              const pct = Math.max(0, Math.min(100, Math.round((m.depth / Math.max(1, depth)) * 100)));
+              try {
+                onProgress(pct);
+              } catch (e) {
+                this.LW("onProgress:error", e);
+              }
+            }
+          }
+        } else if (s.startsWith("bestmove ")) {
+          const parts = s.split(/\s+/);
+          bestMove = parts[1];
+        }
+      }
     });
-    const started = Date.now();
-    return this.call<PositionEval>("evaluate-position", params, onProgress).finally(() => {
-      const took = Date.now() - started;
-      LI("evaluatePositionWithUpdate:done", { tookMs: took });
-    });
+
+    // init UCI
+    this.send(proc, "uci");
+    this.send(proc, `setoption name Threads value ${threads}`);
+    this.send(proc, `setoption name Hash value ${hashMb}`);
+    this.send(proc, `setoption name MultiPV value ${multiPv}`);
+    if (syzygyPath) this.send(proc, `setoption name SyzygyPath value ${syzygyPath}`);
+    this.send(proc, "isready");
+
+    // go
+    this.send(proc, "ucinewgame");
+    this.send(proc, `position fen ${fen}`);
+    this.send(proc, `go depth ${depth} multipv ${multiPv}`);
+
+    await waitForBestmove(proc);
+
+    // graceful quit
+    try {
+      proc.stdin.end("quit\n");
+    } catch {}
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+    }, 150);
+
+    const ordered = Object.values(lines).sort((a, b) => (a.multiPv! - b.multiPv!));
+    // Приводим к PositionEval проекта
+    const result: PositionEval = {
+      lines: ordered.map((l) => ({
+        pv: l.pv,
+        cp: l.cp,
+        mate: l.mate,
+        depth: l.depth,
+        multiPv: l.multiPv,
+      })) as any,
+      bestMove,
+    } as any;
+
+    return result;
   }
 
   /** Оценка целой партии/набора FEN */
-  evaluateGame(params: EvaluateGameParams, onProgress?: (value: number) => void): Promise<GameEval> {
-    LI("evaluateGame:start", {
-      hasProgress: !!onProgress,
-      fens: params?.fens?.length,
-      depth: (params as any)?.depth,
-      multiPv: (params as any)?.multiPv,
-      workersNb: (params as any)?.workersNb,
-    });
-    const started = Date.now();
-    return this.call<GameEval>("evaluate-game", params, onProgress).finally(() => {
-      const took = Date.now() - started;
-      LI("evaluateGame:done", { tookMs: took });
-    });
+  async evaluateGame(params: EvaluateGameParams, onProgress?: (value: number) => void): Promise<GameEval> {
+    const fens = Array.isArray(params.fens) ? params.fens : [];
+    const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
+    const multiPv = Number.isFinite(params.multiPv) ? Number(params.multiPv) : DEFAULT_MULTIPV;
+
+    const positions: PositionEval[] = [];
+    const total = fens.length;
+
+    for (let i = 0; i < total; i++) {
+      const fen = String(fens[i] ?? "");
+      const pe = await this.evaluatePositionWithUpdate({ fen, depth, multiPv });
+      positions.push(pe);
+      if (onProgress) {
+        const pct = Math.round(((i + 1) / Math.max(1, total)) * 100);
+        try {
+          onProgress(pct);
+        } catch (e) {
+          this.LW("onProgress:error", e);
+        }
+      }
+    }
+
+    // Минимально совместимый объект GameEval:
+    const out: GameEval = {
+      positions: positions as any,
+      acpl: { white: 0, black: 0 }, // при необходимости можно вычислить отдельно
+      settings: {
+        engine: "stockfish-native",
+        depth,
+        multiPv,
+      } as any,
+    } as any;
+
+    return out;
   }
 
-  /** Следующий ход движка */
-  getEngineNextMove(fen: string, elo?: number, depth?: number): Promise<string> {
-    LI("getEngineNextMove:start", { fen: fen?.slice(0, 32) + (fen?.length > 32 ? "…" : ""), elo, depth });
-    const started = Date.now();
-    return this.call<string>("next-move", { fen, elo, depth }).finally(() => {
-      const took = Date.now() - started;
-      LI("getEngineNextMove:done", { tookMs: took });
-    });
+  /** Следующий ход движка (упрощённо — bestmove на текущей глубине) */
+  async getEngineNextMove(fen: string, _elo?: number, depth?: number): Promise<string> {
+    const d = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
+    const res = await this.evaluatePositionWithUpdate({ fen, depth: d, multiPv: 1 });
+    return String(res.bestMove ?? res.lines?.[0]?.pv?.[0] ?? "");
   }
 
   /** Останов текущих вычислений */
   async stopAllCurrentJobs(): Promise<void> {
-    LI("stopAllCurrentJobs:start");
-    const started = Date.now();
-    await this.call<void>("stop", {});
-    const took = Date.now() - started;
-    LI("stopAllCurrentJobs:done", { tookMs: took });
+    this.LI("stopAllCurrentJobs:start");
+    const p = this.currentProc;
+    if (!p) return;
+    try {
+      p.stdin.write("stop\n");
+    } catch {}
+    setTimeout(() => {
+      try {
+        p.kill("SIGKILL");
+      } catch {}
+    }, 100);
+    this.currentProc = null;
+    this.LI("stopAllCurrentJobs:done");
   }
 
-  /** Отключение воркера */
+  /** Отключение/освобождение ресурсов */
   shutdown() {
-    LI("shutdown:start");
-    try {
-      this.worker?.terminate?.();
-      LI("shutdown:terminated");
-    } catch (e) {
-      LE("shutdown:error", e);
+    this.LI("shutdown:start");
+    const p = this.currentProc;
+    if (p) {
+      try {
+        p.stdin.end("quit\n");
+      } catch {}
+      try {
+        p.kill("SIGKILL");
+      } catch {}
+      this.currentProc = null;
     }
+    this.LI("shutdown:terminated");
   }
 }
