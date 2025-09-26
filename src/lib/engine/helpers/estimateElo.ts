@@ -1,6 +1,7 @@
 import { ceilsNumber } from "@/lib/math";
 import { EstimatedElo, PositionEval } from "@/types/eval";
 
+
 export const computeEstimatedElo = (
   positions: PositionEval[],
   whiteElo?: number,

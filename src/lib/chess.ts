@@ -287,60 +287,6 @@ export const isCheck = (fen: string): boolean => {
   return game.inCheck();
 };
 
-export const getCapturedPieces = (
-  fen: string,
-  color: Color
-): {
-  piece: string;
-  count: number;
-}[] => {
-  const capturedPieces =
-    color === Color.White
-      ? [
-          { piece: "p", count: 8 },
-          { piece: "b", count: 2 },
-          { piece: "n", count: 2 },
-          { piece: "r", count: 2 },
-          { piece: "q", count: 1 },
-        ]
-      : [
-          { piece: "P", count: 8 },
-          { piece: "B", count: 2 },
-          { piece: "N", count: 2 },
-          { piece: "R", count: 2 },
-          { piece: "Q", count: 1 },
-        ];
-
-  const fenPiecePlacement = fen.split(" ")[0];
-
-  return capturedPieces.map(({ piece, count }) => {
-    const piecesLeftCount = fenPiecePlacement.match(
-      new RegExp(piece, "g")
-    )?.length;
-    const newPiece = pieceFenToSymbol[piece] ?? piece;
-
-    return {
-      piece: newPiece,
-      count: Math.max(0, count - (piecesLeftCount ?? 0)),
-    };
-  });
-};
-
-const pieceFenToSymbol: Record<string, Piece | undefined> = {
-  p: "bP",
-  b: "bB",
-  n: "bN",
-  r: "bR",
-  q: "bQ",
-  k: "bK",
-  P: "wP",
-  B: "wB",
-  N: "wN",
-  R: "wR",
-  Q: "wQ",
-  K: "wK",
-};
-
 export const getLineEvalLabel = (
   line: Pick<LineEval, "cp" | "mate">
 ): string => {

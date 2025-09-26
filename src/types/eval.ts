@@ -8,22 +8,12 @@ export interface PositionEval {
   lines: LineEval[];
 }
 
-export interface EvaluateGameParams {
-  fens: string[];
-  uciMoves: string[];
-  depth?: number;
-  multiPv?: number;
-  setEvaluationProgress?: (value: number) => void;
-  playersRatings?: { white?: number; black?: number };
-  workersNb?: number;
-}
-
 export interface LineEval {
   pv: string[];
   cp?: number;
   mate?: number;
   depth: number;
-  multipv: number;
+  multiPv: number;
 }
 
 export interface Accuracy {
@@ -48,8 +38,6 @@ export interface GameEval {
   accuracy: Accuracy;
   estimatedElo?: EstimatedElo;
   settings: EngineSettings;
-  moves?: any[];
-  acpl?: { white: number; black: number };
 }
 
 export interface EvaluatePositionWithUpdateParams {
@@ -72,9 +60,9 @@ export interface EvaluateGameParams {
   uciMoves: string[];
   depth?: number;
   multiPv?: number;
+  setEvaluationProgress?: (value: number) => void;
   playersRatings?: { white?: number; black?: number };
   workersNb?: number;
-  progressId?: string;
 }
 
 export interface SavedEval {
