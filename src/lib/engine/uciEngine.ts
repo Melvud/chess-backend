@@ -1,5 +1,5 @@
 // src/lib/engine/uciEngine.ts
-// Реализует UCI‑движок через нативный бинарник Stockfish.
+// Реализует UCI-движок через нативный бинарник Stockfish.
 // В отличие от браузерной версии Chesskit, здесь нет Web Worker,
 // поэтому мы напрямую читаем stdout процесса, накапливаем сообщения
 // и затем используем parseEvaluationResults для разбора оценок и bestmove.
@@ -54,7 +54,10 @@ function waitForBestmove(proc: ChildProcessWithoutNullStreams): Promise<void> {
   return new Promise((resolve) => {
     const handler = (chunk: Buffer) => {
       const str = chunk.toString("utf8");
+      // [LOG-VERBOSE] можно раскомментировать, если нужен «сырой» поток stdout:
+      // console.debug(`[UciEngine] stdout(chunk):`, str.trim());
       if (str.includes("bestmove")) {
+        console.info(`[UciEngine] observed bestmove in stdout`);
         proc.stdout.off("data", handler);
         resolve();
       }
@@ -88,19 +91,24 @@ export class UciEngine {
   /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
   static async create(engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
     const eng = new UciEngine(engineName);
+    console.info(`[UciEngine] create:start`, { engineName });
     eng.ensureBinary();
     console.info(`[UciEngine:create:native]`, { engineName, bin: ENGINE_PATH });
+    console.info(`[UciEngine] create:ready`, { engineName });
     return eng;
   }
 
   /** Проверяем наличие и исполняемость бинарника Stockfish */
   private ensureBinary() {
     const bin = path.resolve(ENGINE_PATH);
+    console.info(`[UciEngine] ensureBinary:check`, { bin });
     if (!fs.existsSync(bin)) {
+      console.error(`[UciEngine] binary:notFound`, { bin });
       throw new Error(`Stockfish binary not found at ${bin}. Set ENGINE_PATH or STOCKFISH_PATH.`);
     }
     try {
       fs.accessSync(bin, fs.constants.X_OK);
+      console.info(`[UciEngine] ensureBinary:ok`, { bin });
     } catch {
       console.warn(`[UciEngine] binary:notExecutable`, { bin, hint: `chmod +x "${bin}"` });
     }
@@ -109,9 +117,12 @@ export class UciEngine {
   /** Запускаем новый процесс Stockfish и запоминаем текущий */
   private spawnEngine(): ChildProcessWithoutNullStreams {
     const bin = path.resolve(ENGINE_PATH);
+    console.info(`[UciEngine] spawn:start`, { bin });
     const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
     this.currentProc = proc;
-    proc.on("exit", (_code, _sig) => {
+    console.info(`[UciEngine] spawn:ok`, { pid: proc.pid });
+    proc.on("exit", (code, sig) => {
+      console.info(`[UciEngine] proc:exit`, { pid: proc.pid, code, sig });
       if (this.currentProc === proc) this.currentProc = null;
     });
     proc.stderr.on("data", (b) => console.warn(`[UciEngine] stderr:`, String(b)));
@@ -120,6 +131,12 @@ export class UciEngine {
 
   /** Отправляем команду в stdin движка */
   private send(proc: ChildProcessWithoutNullStreams, cmd: string) {
+    // Не логируем полные длинные команды FEN/UCIs для экономии логов
+    const short =
+      cmd.startsWith("position fen")
+        ? `position fen <${cmd.length} chars>`
+        : cmd;
+    console.debug(`[UciEngine] >>`, short);
     proc.stdin.write(cmd + "\n");
   }
 
@@ -141,6 +158,11 @@ export class UciEngine {
     const useNNUE = (params as any).useNNUE as boolean | undefined;
     const elo = Number((params as any).elo);
 
+    console.info(`[UciEngine] evalPosition:start`, {
+      depth, multiPv, threads, hashMb, useNNUE, elo: Number.isFinite(elo) ? elo : undefined,
+      fenPreview: fen?.slice(0, 30)
+    });
+
     const proc = this.spawnEngine();
     const results: string[] = [];
     let lastDepthReported = 0;
@@ -152,6 +174,10 @@ export class UciEngine {
         const s = raw.trim();
         if (!s) continue;
         results.push(s);
+
+        // [LOG-VERBOSE] сырые info-строки:
+        // if (s.startsWith("info ")) console.debug(`[UciEngine] info:`, s);
+
         if (s.startsWith("info ")) {
           const m = parseInfoLineForProgress(s);
           if (m?.depth && onProgress && m.depth !== lastDepthReported) {
@@ -159,8 +185,13 @@ export class UciEngine {
             const pct = Math.max(0, Math.min(100, Math.round((m.depth / Math.max(1, depth)) * 100)));
             try {
               onProgress(pct);
+              if (pct % 10 === 0 || pct >= 95) {
+                console.info(`[UciEngine] evalPosition:progress`, { depth: m.depth, pct });
+              }
             } catch {}
           }
+        } else if (s.startsWith("bestmove")) {
+          console.info(`[UciEngine] bestmove:line`, { line: s });
         }
       }
     });
@@ -183,11 +214,12 @@ export class UciEngine {
     // Новый поиск
     this.send(proc, "ucinewgame");
     this.send(proc, `position fen ${fen}`);
-    // MultiPV уже установлен, поэтому multipv не передаём в go
     this.send(proc, `go depth ${depth}`);
+    console.info(`[UciEngine] go:issued`, { depth });
 
     // Ждём появления bestmove
     await waitForBestmove(proc);
+    console.info(`[UciEngine] evalPosition:bestmove:received`);
 
     // Завершаем работу движка
     try {
@@ -202,6 +234,10 @@ export class UciEngine {
 
     // Разбираем результаты с помощью Chesskit парсера
     const parsed = parseEvaluationResults(results, fen);
+    console.info(`[UciEngine] evalPosition:done`, {
+      gotLines: Array.isArray((parsed as any)?.lines) ? (parsed as any).lines.length : undefined,
+      best: (parsed as any)?.bestMove ?? (parsed as any)?.lines?.[0]?.pv?.[0]
+    });
     // parseEvaluationResults может инвертировать cp для хода чёрных
     return parsed;
   }
@@ -214,23 +250,44 @@ export class UciEngine {
     const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
     const multiPv = Number.isFinite(params.multiPv) ? Number(params.multiPv) : DEFAULT_MULTIPV;
 
+    console.info(`[UciEngine] evalGame:start`, {
+      positions: fens.length, depth, multiPv,
+      workersNb: (params as any)?.workersNb,
+      useNNUE: (params as any)?.useNNUE,
+      elo: (params as any)?.elo
+    });
+
     const positions: PositionEval[] = [];
     const total = fens.length;
     for (let i = 0; i < total; i++) {
       const fen = String(fens[i] ?? "");
+      const moveNo = i; // позиция до i-го хода
+      if (i === 0 || i === total - 1 || i % 10 === 0) {
+        console.info(`[UciEngine] evalGame:pos:start`, { index: i, total, fenPreview: fen.slice(0, 30) });
+      }
       const pe = await this.evaluatePositionWithUpdate({
         fen,
         depth,
         multiPv,
         // пробрасываем дополнительные поля
         ...params,
-      });
+      }, undefined);
       positions.push(pe);
       if (onProgress) {
         const pct = Math.round(((i + 1) / Math.max(1, total)) * 100);
         try {
           onProgress(pct);
+          if (pct % 10 === 0 || pct >= 95) {
+            console.info(`[UciEngine] evalGame:progress`, { pct, done: i + 1, total });
+          }
         } catch {}
+      }
+      if (i === 0 || i === total - 1 || i % 10 === 0) {
+        console.info(`[UciEngine] evalGame:pos:done`, {
+          index: i,
+          best: (pe as any)?.bestMove ?? (pe as any)?.lines?.[0]?.pv?.[0],
+          lines: Array.isArray((pe as any)?.lines) ? (pe as any).lines.length : undefined
+        });
       }
     }
 
@@ -243,25 +300,37 @@ export class UciEngine {
         multiPv,
       } as any,
     } as any;
+
+    console.info(`[UciEngine] evalGame:done`, {
+      positions: positions.length,
+      depth,
+      multiPv,
+    });
+
     return out;
   }
 
   /** Получить лучший ход для данной позиции. */
   async getEngineNextMove(fen: string, _elo?: number, depth?: number): Promise<string> {
     const d = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
+    console.info(`[UciEngine] getBestMove:start`, { depth: d, fenPreview: fen.slice(0, 30) });
     const res = await this.evaluatePositionWithUpdate({ fen, depth: d, multiPv: 1 });
-    return String(res.bestMove ?? res.lines?.[0]?.pv?.[0] ?? "");
+    const best = String(res.bestMove ?? res.lines?.[0]?.pv?.[0] ?? "");
+    console.info(`[UciEngine] getBestMove:done`, { best });
+    return best;
   }
 
   /** Остановить текущие задачи (stop), если процесс активен */
   async stopAllCurrentJobs(): Promise<void> {
     const p = this.currentProc;
     if (!p) return;
+    console.info(`[UciEngine] stopAllCurrentJobs:send stop`, { pid: p.pid });
     try {
       p.stdin.write("stop\n");
     } catch {}
     setTimeout(() => {
       try {
+        console.info(`[UciEngine] stopAllCurrentJobs:kill`, { pid: p.pid });
         p.kill("SIGKILL");
       } catch {}
     }, 100);
@@ -272,6 +341,7 @@ export class UciEngine {
   shutdown() {
     const p = this.currentProc;
     if (p) {
+      console.info(`[UciEngine] shutdown`, { pid: p.pid });
       try {
         p.stdin.end("quit\n");
       } catch {}
@@ -279,6 +349,8 @@ export class UciEngine {
         p.kill("SIGKILL");
       } catch {}
       this.currentProc = null;
+    } else {
+      console.info(`[UciEngine] shutdown:no_proc`);
     }
   }
 }
