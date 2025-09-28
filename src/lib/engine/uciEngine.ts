@@ -19,6 +19,10 @@ import os from "node:os";
 // Импортируем парсер результатов из Chesskit
 import { parseEvaluationResults } from "@/lib/engine/helpers/parseResults";
 
+// ────────────────────────────────────────────────────────────────────
+// Вспомогательные типы и функции
+// ────────────────────────────────────────────────────────────────────
+
 // Вспомогательный тип строки info (для отслеживания прогресса)
 interface LineEvalProgress {
   pv: string[];
@@ -55,7 +59,6 @@ function waitForBestmove(proc: ChildProcessWithoutNullStreams): Promise<void> {
     const handler = (chunk: Buffer) => {
       const str = chunk.toString("utf8");
       if (str.includes("bestmove")) {
-        // console.info(`[UciEngine] observed bestmove in stdout`);
         proc.stdout.off("data", handler);
         resolve();
       }
@@ -64,20 +67,43 @@ function waitForBestmove(proc: ChildProcessWithoutNullStreams): Promise<void> {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────
 // Значения по умолчанию для настроек движка
-const ENGINE_PATH =
-  process.env.STOCKFISH_PATH || path.resolve("./bin/stockfish");
+// ────────────────────────────────────────────────────────────────────
+
+const ENGINE_PATH_ENV =
+  process.env.STOCKFISH_PATH || process.env.STOCKFISH_BIN || "./bin/stockfish";
+const ENGINE_PATH = resolveEnginePath(ENGINE_PATH_ENV);
+
 const DEFAULT_DEPTH = Number.isFinite(Number(process.env.ENGINE_DEPTH))
   ? Number(process.env.ENGINE_DEPTH)
   : 16;
 const DEFAULT_MULTIPV = Number.isFinite(Number(process.env.ENGINE_MULTIPV))
   ? Number(process.env.ENGINE_MULTIPV)
   : 3;
-// по умолчанию стараемся занять все ядра, но оставим одно ядро системе
-const DEFAULT_THREADS = Math.max(1, Math.min(os.cpus()?.length ?? 2, (os.cpus()?.length ?? 2) - 0));
+// по умолчанию стараемся занять все ядра (оставлять ядро системе можно с -1, но тут оставим как есть)
+const CPU_COUNT = Math.max(1, os.cpus()?.length ?? 1);
+const DEFAULT_THREADS = Math.max(1, CPU_COUNT);
 const DEFAULT_HASH_MB = Number.isFinite(Number(process.env.ENGINE_HASH_MB))
   ? Number(process.env.ENGINE_HASH_MB)
   : 256;
+
+// «настоящий» уровень навыка Stockfish
+const SKILL_LEVEL_MIN = 0;
+const SKILL_LEVEL_MAX = 20;
+
+// ────────────────────────────────────────────────────────────────────
+// Вспомогательное: резолв бинарника под win/*nix
+// ────────────────────────────────────────────────────────────────────
+
+function resolveEnginePath(p: string): string {
+  let bin = path.resolve(p);
+  if (process.platform === "win32" && !bin.toLowerCase().endsWith(".exe")) {
+    const withExe = `${bin}.exe`;
+    if (fs.existsSync(withExe)) bin = withExe;
+  }
+  return bin;
+}
 
 export class UciEngine {
   private engineName!: EngineName;
@@ -90,38 +116,32 @@ export class UciEngine {
   /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
   static async create(engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
     const eng = new UciEngine(engineName);
-    // console.info(`[UciEngine] create:start`, { engineName });
     eng.ensureBinary();
-    // console.info(`[UciEngine:create:native]`, { engineName, bin: ENGINE_PATH });
-    // console.info(`[UciEngine] create:ready`, { engineName });
     return eng;
   }
 
   /** Проверяем наличие и исполняемость бинарника Stockfish */
   private ensureBinary() {
-    const bin = path.resolve(ENGINE_PATH);
-    // console.info(`[UciEngine] ensureBinary:check`, { bin });
+    const bin = ENGINE_PATH;
     if (!fs.existsSync(bin)) {
-      // console.error(`[UciEngine] binary:notFound`, { bin });
-      throw new Error(`Stockfish binary not found at ${bin}. Set ENGINE_PATH or STOCKFISH_PATH.`);
+      throw new Error(`Stockfish binary not found at ${bin}. Set STOCKFISH_PATH / STOCKFISH_BIN.`);
     }
     try {
       fs.accessSync(bin, fs.constants.X_OK);
-      // console.info(`[UciEngine] ensureBinary:ok`, { bin });
     } catch {
-      // console.warn(`[UciEngine] binary:notExecutable`, { bin, hint: `chmod +x "${bin}"` });
+      // На некоторых FS X_OK может «падать», но бинарь запускается; оставляем мягко.
     }
   }
 
   /** Запускаем новый процесс Stockfish и запоминаем текущий */
   private spawnEngine(): ChildProcessWithoutNullStreams {
-    const bin = path.resolve(ENGINE_PATH);
+    const bin = ENGINE_PATH;
     const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
     this.currentProc = proc;
-    proc.on("exit", (_code, _sig) => {
+    proc.on("exit", () => {
       if (this.currentProc === proc) this.currentProc = null;
     });
-    // перенапряжённый stderr не нужен в прод-логах:
+    // лишний stderr не сыпем в логи
     proc.stderr.on("data", () => {});
     return proc;
   }
@@ -143,6 +163,8 @@ export class UciEngine {
       syzygyPath?: string;
       useNNUE?: boolean;
       elo?: number;
+      /** «Настоящий» уровень сложности Stockfish 0..20; при наличии имеет приоритет над elo */
+      skillLevel?: number;
     },
   ): Promise<void> {
     const threads = Math.max(1, Number.isFinite(opts.threads!) ? Number(opts.threads) : DEFAULT_THREADS);
@@ -150,6 +172,8 @@ export class UciEngine {
     const multiPv = Math.max(1, Number.isFinite(opts.multiPv!) ? Number(opts.multiPv) : DEFAULT_MULTIPV);
     const useNNUE = typeof opts.useNNUE === "boolean" ? opts.useNNUE : undefined;
     const elo = Number(opts.elo);
+    const hasElo = Number.isFinite(elo);
+    const skill = clampToSkill(opts.skillLevel);
 
     this.send(proc, "uci");
     this.send(proc, `setoption name Threads value ${threads}`);
@@ -160,10 +184,18 @@ export class UciEngine {
       // у разных сборок название опции NNUE отличается; самая совместимая — Use NNUE
       this.send(proc, `setoption name Use NNUE value ${useNNUE ? "true" : "false"}`);
     }
-    if (Number.isFinite(elo)) {
+
+    // Приоритет: skillLevel (0..20) — это «нативный» уровень Stockfish.
+    if (typeof skill === "number") {
+      // Если используем Skill Level, не ограничиваем по UCI_Elo
+      this.send(proc, `setoption name UCI_LimitStrength value false`);
+      this.send(proc, `setoption name Skill Level value ${skill}`);
+    } else if (hasElo) {
+      // Иначе — ограничиваем по UCI_Elo (старое поведение)
       this.send(proc, `setoption name UCI_LimitStrength value true`);
       this.send(proc, `setoption name UCI_Elo value ${elo}`);
     }
+
     this.send(proc, "isready");
     this.send(proc, "ucinewgame"); // старт новой партии
   }
@@ -176,7 +208,6 @@ export class UciEngine {
     multiPv: number,
     onDepth?: (d: number, pct: number) => void,
   ): Promise<PositionEval> {
-    // собираем только свои строки этой позиции
     const lines: string[] = [];
     let lastReportDepth = 0;
 
@@ -230,6 +261,7 @@ export class UciEngine {
     const syzygyPath = (params as any).syzygyPath as string | undefined;
     const useNNUE = (params as any).useNNUE as boolean | undefined;
     const elo = Number((params as any).elo);
+    const skillLevel = clampToSkill((params as any).skillLevel);
 
     const proc = this.spawnEngine();
 
@@ -254,8 +286,8 @@ export class UciEngine {
     };
     proc.stdout.on("data", onStdout);
 
-    // Настройка движка
-    await this.initSession(proc, { threads, hashMb, multiPv, syzygyPath, useNNUE, elo });
+    // Настройка движка (skillLevel имеет приоритет над elo)
+    await this.initSession(proc, { threads, hashMb, multiPv, syzygyPath, useNNUE, elo, skillLevel });
 
     // Новый поиск — отдельная позиция
     this.send(proc, `position fen ${fen}`);
@@ -276,9 +308,7 @@ export class UciEngine {
   }
 
   /**
-   * Оценка списка FEN — теперь в рамках **одного процесса**.
-   * Это значительно сокращает накладные расходы и позволяет использовать
-   * тёплый кэш (TT) между позициями одной партии.
+   * Оценка списка FEN — в рамках **одного процесса** (теплый кэш TT).
    */
   async evaluateGame(params: EvaluateGameParams, onProgress?: (value: number) => void): Promise<GameEval> {
     const fens = Array.isArray(params.fens) ? params.fens : [];
@@ -294,6 +324,7 @@ export class UciEngine {
       syzygyPath: (params as any)?.syzygyPath,
       useNNUE: (params as any)?.useNNUE,
       elo: (params as any)?.elo,
+      skillLevel: clampToSkill((params as any)?.skillLevel),
     });
 
     const positions: PositionEval[] = [];
@@ -302,13 +333,13 @@ export class UciEngine {
     for (let i = 0; i < total; i++) {
       const fen = String(fens[i] ?? "");
 
-      // Внутри сессии не зовём ucinewgame (сохраняем TT), просто меняем позицию
+      // Внутри сессии не зовём ucinewgame (сохраняем TT)
       const pe = await this.evaluateFenOnSession(
         proc,
         fen,
         depth,
         multiPv,
-        undefined, // глубинный прогресс по одной позиции внутри партии не транслируем наружу
+        undefined, // глубинный прогресс внутри партии не транслируем наружу
       );
       positions.push(pe);
 
@@ -338,7 +369,7 @@ export class UciEngine {
   /** Получить лучший ход для данной позиции. */
   async getEngineNextMove(fen: string, _elo?: number, depth?: number): Promise<string> {
     const d = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
-    const res = await this.evaluatePositionWithUpdate({ fen, depth: d, multiPv: 1 });
+    const res = await this.evaluatePositionWithUpdate({ fen, depth: d, multiPv: 1 } as any);
     const best = String(res.bestMove ?? res.lines?.[0]?.pv?.[0] ?? "");
     return best;
   }
@@ -361,4 +392,16 @@ export class UciEngine {
       this.currentProc = null;
     }
   }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Внутренние утилиты
+// ────────────────────────────────────────────────────────────────────
+
+function clampToSkill(v: unknown): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  const clamped = Math.max(SKILL_LEVEL_MIN, Math.min(SKILL_LEVEL_MAX, Math.round(n)));
+  return clamped;
 }

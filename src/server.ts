@@ -160,7 +160,9 @@ function normalizePlayersRatings(src: any): PlayersRatings | undefined {
 // NB: UciEngine — отдельный процесс под капотом. Создаём несколько и гоняем параллельно.
 
 type EngineIface = {
-  evaluatePositionWithUpdate: (p: EvaluatePositionWithUpdateParams) => Promise<{ lines: any[]; bestMove?: string }>;
+  evaluatePositionWithUpdate: (
+    p: EvaluatePositionWithUpdateParams
+  ) => Promise<{ lines: any[]; bestMove?: string }>;
   evaluateGame: (
     p: EvaluateGameParams,
     onProgress?: (p: number) => void,
@@ -171,7 +173,11 @@ type EngineIface = {
 // единичный инстанс для одиночных запросов позиции:
 let singletonEngine: EngineIface | null = null;
 
-async function createEngineInstance(opts?: { threads?: number; hashMb?: number; multiPv?: number }): Promise<EngineIface> {
+async function createEngineInstance(opts?: {
+  threads?: number;
+  hashMb?: number;
+  multiPv?: number;
+}): Promise<EngineIface> {
   const eng = await UciEngine.create(ENGINE_NAME, "");
   try {
     const threads = Math.max(1, Math.floor(opts?.threads ?? ENGINE_THREADS));
@@ -191,7 +197,11 @@ async function createEngineInstance(opts?: { threads?: number; hashMb?: number; 
 async function getSingletonEngine(): Promise<EngineIface> {
   if (singletonEngine) return singletonEngine;
   // один процесс — пусть ест все потоки
-  singletonEngine = await createEngineInstance({ threads: ENGINE_THREADS, hashMb: ENGINE_HASH_MB, multiPv: DEFAULT_MULTIPV });
+  singletonEngine = await createEngineInstance({
+    threads: ENGINE_THREADS,
+    hashMb: ENGINE_HASH_MB,
+    multiPv: DEFAULT_MULTIPV,
+  });
   return singletonEngine;
 }
 
@@ -266,34 +276,47 @@ async function evaluateGameParallel(
   const tasks = indexes.map(async (idxs, wi) => {
     if (idxs.length === 0) return { positions: [], settings: {} } as any as GameEval;
 
-    const shardFens = idxs.map(i => baseParams.fens![i]);
-    const shardUci = idxs.map(i => baseParams.uciMoves![i]);
+    const shardFens = idxs.map((i) => baseParams.fens![i]);
+    const shardUci = idxs.map((i) => baseParams.uciMoves![i]);
 
     // создаём отдельный процесс с урезанными Threads/Hash
-    const eng = await createEngineInstance({ threads: threadsPer, hashMb: hashPer, multiPv: multiPvPer });
+    const eng = await createEngineInstance({
+      threads: threadsPer,
+      hashMb: hashPer,
+      multiPv: multiPvPer,
+    });
 
     const onShardProgress = (p: number) => {
       const shardDone = Math.round((p / 100) * shardFens.length);
       const delta = Math.max(0, shardDone - perWorkerDone[wi]);
-      if (delta > 0) { perWorkerDone[wi] += delta; reportProgress(); }
+      if (delta > 0) {
+        perWorkerDone[wi] += delta;
+        reportProgress();
+      }
     };
 
     const out = await eng.evaluateGame(
       { ...baseParams, fens: shardFens, uciMoves: shardUci },
-      onShardProgress
+      onShardProgress,
     );
 
-    const positionsWithIdx = (out.positions as any[]).map((pos, k) => ({ __idx: idxs[k], ...pos }));
+    const positionsWithIdx = (out.positions as any[]).map((pos, k) => ({
+      __idx: idxs[k],
+      ...pos,
+    }));
     return { ...out, positions: positionsWithIdx };
   });
 
   const shards = await Promise.all(tasks);
 
   const positionsMerged: any[] = new Array(total);
-  for (const s of shards) for (const p of (s.positions as any[])) {
-    positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
-  }
-  const first = shards.find(s => Array.isArray(s.positions) && s.positions.length > 0);
+  for (const s of shards)
+    for (const p of s.positions as any[]) {
+      positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
+    }
+  const first = shards.find(
+    (s) => Array.isArray(s.positions) && s.positions.length > 0,
+  );
   const settings = (first as any)?.settings ?? {};
   return { positions: positionsMerged, settings } as any as GameEval;
 }
@@ -519,7 +542,10 @@ function pgnToFenAndUci(pgn: string): {
     if (!move) {
       const beforeFen = fens[fens.length - 1] ?? "";
       throw new Error(
-        `Invalid SAN during replay: ${JSON.stringify({ san, before: beforeFen })}`,
+        `Invalid SAN during replay: ${JSON.stringify({
+          san,
+          before: beforeFen,
+        })}`,
       );
     }
     const uci = `${move.from}${move.to}${move.promotion ?? ""}`;
@@ -562,17 +588,22 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       multiPv,
       useNNUE,
       elo,
+      skillLevel, // ← добавлено
       // real-time формат:
       beforeFen,
       afterFen,
       uciMove,
     } = req.body ?? {};
 
-    const effDepth   = Number.isFinite(depth)   ? Number(depth)   : DEFAULT_DEPTH;
+    const effDepth = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
     const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
 
     // === РЕЖИМ real-time: анализ ОДНОГО хода (две позиции + UCI) ===
-    if (typeof beforeFen === "string" && typeof afterFen === "string" && typeof uciMove === "string") {
+    if (
+      typeof beforeFen === "string" &&
+      typeof afterFen === "string" &&
+      typeof uciMove === "string"
+    ) {
       // 1) Считаем мини-партию из двух позиций, чтобы получить линии ДО и ПОСЛЕ
       const baseParams: EvaluateGameParams = {
         fens: [String(beforeFen), String(afterFen)],
@@ -581,6 +612,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         multiPv: effMultiPv,
         ...(useNNUE !== undefined ? { useNNUE } : {}),
         ...(elo !== undefined ? { elo } : {}),
+        ...(skillLevel !== undefined ? { skillLevel } : {}), // ← добавлено
       } as any;
 
       // workers=1 → используем singleton-движок (без оверсабскрипшна CPU)
@@ -590,7 +622,9 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       type ClientLine = { pv: string[]; cp?: number; mate?: number; best?: string };
       type ClientPosition = { fen: string; idx: number; lines: ClientLine[] };
 
-      const rawPositions: any[] = Array.isArray((out as any)?.positions) ? (out as any).positions : [];
+      const rawPositions: any[] = Array.isArray((out as any)?.positions)
+        ? (out as any).positions
+        : [];
       const fens2 = [String(beforeFen), String(afterFen)];
       const positions: ClientPosition[] = fens2.map((fenStr: string, idx: number) => {
         const posAny: any = rawPositions[idx] ?? {};
@@ -601,7 +635,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             : Array.isArray(l?.pv?.moves)
             ? l.pv.moves
             : [];
-          const cpVal   = typeof l?.cp   === "number" ? l.cp   : undefined;
+          const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
           const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
           return { pv, cp: cpVal, mate: mateVal };
         });
@@ -628,21 +662,28 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         const ch = new Chess();
         ch.load(String(beforeFen));
         const from = String(uciMove).slice(0, 2);
-        const to   = String(uciMove).slice(2, 4);
+        const to = String(uciMove).slice(2, 4);
         const prom = String(uciMove).slice(4) || undefined;
         const mv = ch.move({ from, to, promotion: prom as any });
         if (mv && ch.isCheckmate && ch.isCheckmate()) {
           const moverIsWhite = String(beforeFen).includes(" w ");
           const mateVal = moverIsWhite ? +1 : -1;
-          positions[1].lines = Array.isArray(positions[1].lines) ? positions[1].lines : [];
+          positions[1].lines = Array.isArray(positions[1].lines)
+            ? positions[1].lines
+            : [];
           if (positions[1].lines.length === 0) {
             positions[1].lines.push({ pv: [], mate: mateVal });
           } else {
-            positions[1].lines[0] = { ...(positions[1].lines[0] || {}), mate: mateVal };
+            positions[1].lines[0] = {
+              ...(positions[1].lines[0] || {}),
+              mate: mateVal,
+            };
             delete (positions[1].lines[0] as any).cp;
           }
         }
-      } catch { /* no-op */ }
+      } catch {
+        /* no-op */
+      }
 
       // 4) Если у позиции «до» всё ещё нет понятного best (ни pv[0], ни bestMove) — добираем быстрым вызовом движка
       const needBestFix =
@@ -658,6 +699,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             multiPv: effMultiPv,
             useNNUE,
             elo,
+            ...(skillLevel !== undefined ? { skillLevel } : {}), // ← добавлено
           } as any);
           const rawTop = Array.isArray(eval0?.lines) ? eval0.lines[0] : undefined;
           const bestFromEngine: string =
@@ -668,7 +710,9 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
           if (bestFromEngine) {
             positions[0].lines[0].best = String(bestFromEngine);
             // чтобы classifier имел и pv[0]
-            const hasPv0 = Array.isArray(positions[0].lines[0].pv) && positions[0].lines[0].pv.length > 0;
+            const hasPv0 =
+              Array.isArray(positions[0].lines[0].pv) &&
+              positions[0].lines[0].pv.length > 0;
             if (!hasPv0) {
               positions[0].lines[0].pv = [String(bestFromEngine)];
             }
@@ -688,13 +732,17 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
 
       // 6) Лучший ход «до» (совет движка из позиции 0) — уже гарантирован выше
       const bestFromBefore =
-        String(positions[0]?.lines?.[0]?.best ?? positions[0]?.lines?.[0]?.pv?.[0] ?? "") || undefined;
+        String(
+          positions[0]?.lines?.[0]?.best ??
+            positions[0]?.lines?.[0]?.pv?.[0] ??
+            "",
+        ) || undefined;
 
       // 7) Классификация хода (теперь на корректно нормализованных позициях с установленным best)
       const classified = getMovesClassification(
         positions as any,
         [String(uciMove)],
-        [String(beforeFen), String(afterFen)]
+        [String(beforeFen), String(afterFen)],
       ) as any[];
 
       const clsRaw: any | undefined = classified?.[1]?.moveClassification;
@@ -719,6 +767,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       multiPv: Number.isFinite(multiPv) ? Number(multiPv) : undefined,
       useNNUE,
       elo,
+      ...(skillLevel !== undefined ? { skillLevel } : {}), // ← добавлено
     } as any;
 
     const finalEval = await engine.evaluatePositionWithUpdate(params);
@@ -726,12 +775,12 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
   } catch (e: any) {
     res
       .status(500)
-      .json({ error: "evaluate_position_failed", details: String(e?.message ?? e) });
+      .json({
+        error: "evaluate_position_failed",
+        details: String(e?.message ?? e),
+      });
   }
 });
-
-
-
 
 app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
   const progressId = String(
@@ -773,6 +822,7 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
       playersRatings,
       ...(body.useNNUE !== undefined ? { useNNUE: body.useNNUE } : {}),
       ...(body.elo !== undefined ? { elo: body.elo } : {}),
+      ...(body.skillLevel !== undefined ? { skillLevel: body.skillLevel } : {}), // ← добавлено
     } as any;
 
     // очередь: задача будет ждать слот, затем выполнится и вернёт полный отчёт
@@ -820,7 +870,10 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
     if (progressId) setProgress(progressId, { stage: "done" as ProgressStage });
     res
       .status(500)
-      .json({ error: "evaluate_game_failed", details: String(e?.message ?? e) });
+      .json({
+        error: "evaluate_game_failed",
+        details: String(e?.message ?? e),
+      });
   }
 });
 
@@ -829,7 +882,7 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
     (req.query as any)?.progressId ?? req.body?.progressId ?? "",
   );
   try {
-    const { pgn, depth, multiPv, workersNb, useNNUE, elo } = req.body ?? {};
+    const { pgn, depth, multiPv, workersNb, useNNUE, elo, skillLevel } = req.body ?? {};
     if (!pgn || typeof pgn !== "string") {
       return res.status(400).json({ error: "pgn_required" });
     }
@@ -852,6 +905,7 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
       playersRatings,
       useNNUE,
       elo,
+      ...(skillLevel !== undefined ? { skillLevel } : {}), // ← добавлено
     } as any;
 
     const result = await jobQueue.enqueue(async () => {
@@ -898,12 +952,17 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
     if (progressId) setProgress(progressId, { stage: "done" as ProgressStage });
     res
       .status(500)
-      .json({ error: "evaluate_game_failed", details: String(e?.message ?? e) });
+      .json({
+        error: "evaluate_game_failed",
+        details: String(e?.message ?? e),
+      });
   }
 });
 
 app.use((req, res) => {
-  res.status(404).json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
+  res
+    .status(404)
+    .json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
 });
 
 app.listen(PORT, () => {
@@ -966,7 +1025,8 @@ function buildMoveReports(args: {
   perMoveAcc: number[];
   classified: any[];
 }) {
-  const { positions, fens, uciMoves, winPercents, perMoveAcc, classified } = args;
+  const { positions, fens, uciMoves, winPercents, perMoveAcc, classified } =
+    args;
   const count = Math.min(uciMoves.length, Math.max(0, fens.length - 1));
   const chess = new Chess(fens[0]);
   const list: any[] = [];
@@ -1049,7 +1109,7 @@ function buildFullReport(args: {
         // Нетерминальная/ничейная позиция: безопасный fallback, чтобы не падал win%/accuracy
         lines.push({ pv: [], cp: 0, best: "" });
       }
-}
+    }
     const firstPv = lines[0]?.pv;
     const best =
       (posAny as any)?.bestMove ??
