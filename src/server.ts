@@ -38,9 +38,13 @@ const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
 const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
 
 // новые ENV для ускорения
-const ENGINE_THREADS = Math.max(1, Number(process.env.ENGINE_THREADS ?? 4));
-const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 256));
 const CPU_CORES = Math.max(1, os.cpus()?.length ?? 1);
+// по умолчанию задействуем все ядра, если ENV не задан
+const ENGINE_THREADS = Math.max(
+  1,
+  Number(process.env.ENGINE_THREADS ?? CPU_CORES),
+);
+const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 256));
 const ENGINE_WORKERS_MAX = Math.max(
   1,
   Number(process.env.ENGINE_WORKERS_MAX ?? CPU_CORES),
@@ -161,7 +165,6 @@ type EngineIface = {
     p: EvaluateGameParams,
     onProgress?: (p: number) => void,
   ) => Promise<GameEval>;
-  // опционально: если в твоей реализации есть метод установки UCI-опций — раскомментируй
   // setOption?: (name: string, value: string | number | boolean) => Promise<void>;
 };
 
@@ -231,7 +234,12 @@ async function evaluateGameParallel(
   const fens = baseParams.fens ?? [];
   const total = fens.length;
 
-  const workers = Math.min(Math.max(1, Math.floor(workersRequested || 1)), ENGINE_WORKERS_MAX);
+  // Если workersRequested <= 0 (или NaN), используем максимум доступных воркеров
+  const requested = Number(workersRequested);
+  const workers =
+    Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.max(1, Math.floor(requested)), ENGINE_WORKERS_MAX)
+      : ENGINE_WORKERS_MAX;
 
   // одиночный процесс — пусть ест все потоки
   if (workers === 1 || total <= 2) {
@@ -261,7 +269,7 @@ async function evaluateGameParallel(
     const shardFens = idxs.map(i => baseParams.fens![i]);
     const shardUci = idxs.map(i => baseParams.uciMoves![i]);
 
-    // 👉 ВАЖНО: создаём отдельный процесс с урезанными Threads/Hash
+    // создаём отдельный процесс с урезанными Threads/Hash
     const eng = await createEngineInstance({ threads: threadsPer, hashMb: hashPer, multiPv: multiPvPer });
 
     const onShardProgress = (p: number) => {
@@ -548,7 +556,64 @@ app.get("/api/v1/progress/:id", (req, res) => {
 
 app.post("/api/v1/evaluate/position", async (req, res) => {
   try {
-    const { fen, depth, multiPv, useNNUE, elo } = req.body ?? {};
+    const {
+      fen,
+      depth,
+      multiPv,
+      useNNUE,
+      elo,
+      // новое для real-time классификации:
+      beforeFen,
+      afterFen,
+      uciMove,
+    } = req.body ?? {};
+
+    // --- Режим real-time классификации хода по двум FEN + UCI ---
+    // Если пришли beforeFen/afterFen/uciMove — считаем это запросом на оценку хода.
+    if (beforeFen && afterFen && uciMove) {
+      const effDepth = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
+      const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
+
+      // считаем как «мини-партию» из двух позиций
+      const baseParams: EvaluateGameParams = {
+        fens: [String(beforeFen), String(afterFen)],
+        uciMoves: [String(uciMove)],
+        depth: effDepth,
+        multiPv: effMultiPv,
+        ...(useNNUE !== undefined ? { useNNUE } : {}),
+        ...(elo !== undefined ? { elo } : {}),
+      } as any;
+
+      const out: GameEval = await evaluateGameParallel(baseParams, 1);
+
+      // позиции 0 — ДО, 1 — ПОСЛЕ
+      const pos0: any = (out as any)?.positions?.[0] ?? {};
+      const pos1: any = (out as any)?.positions?.[1] ?? {};
+
+      // аккуратная BEST для «до» (если не пришёл явный bestMove)
+      const bestFromBefore =
+        String(pos0?.bestMove ?? pos0?.lines?.[0]?.pv?.[0] ?? "") || undefined;
+
+      // классификация хода (используем уже существующую логику проекта)
+      const classified = getMovesClassification(
+        out.positions as any,
+        [String(uciMove)],
+        [String(beforeFen), String(afterFen)],
+      ) as any[];
+
+      const clsRaw: any | undefined = classified?.[1]?.moveClassification;
+      const cls = toClientMoveClassUpper(clsRaw);
+
+      // Возвращаем линии «после хода», bestMove с «до» (совет движка из предыдущей позиции)
+      // ВАЖНО: не обнуляем оценку при мате — в линиях остаётся mate (а cp не трогаем).
+      return res.json({
+        lines: Array.isArray(pos1?.lines) ? pos1.lines : [],
+        bestMove: bestFromBefore,
+        moveClassification: cls, // дополнительное поле (клиент со своим DTO игнорирует лишнее)
+      });
+    }
+
+    // --- Обычный режим оценки одной позиции (как было) ---
     if (!fen || typeof fen !== "string") {
       return res.status(400).json({ error: "fen_required" });
     }
@@ -560,6 +625,8 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       useNNUE,
       elo,
     } as any;
+
+    // Не трогаем mate/cp: внутри UCI парсера mate остаётся mate, cp — cp (не ставим нули).
     const finalEval = await engine.evaluatePositionWithUpdate(params);
     res.json(finalEval);
   } catch (e: any) {
@@ -568,6 +635,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       .json({ error: "evaluate_position_failed", details: String(e?.message ?? e) });
   }
 });
+
 
 app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
   const progressId = String(
@@ -618,7 +686,7 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
 
       const out: GameEval = await evaluateGameParallel(
         baseParams,
-        Math.max(1, Number(body.workersNb ?? 0)),
+        Number(body.workersNb ?? 0), // 0/undefined -> авто (ENGINE_WORKERS_MAX)
         (p) => {
           if (progressId) {
             const done = Math.max(
@@ -696,7 +764,7 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
 
       const out: GameEval = await evaluateGameParallel(
         baseParams,
-        Math.max(1, Number(workersNb ?? 0)),
+        Number(workersNb ?? 0), // 0/undefined -> авто (ENGINE_WORKERS_MAX)
         (p) => {
           if (progressId) {
             const done = Math.max(
