@@ -594,6 +594,47 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       const bestFromBefore =
         String(pos0?.bestMove ?? pos0?.lines?.[0]?.pv?.[0] ?? "") || undefined;
 
+
+            // --- ПАТЧ: гарантируем mate для матующей позиции и непустые lines ---
+      try {
+        const ch = new Chess();
+        ch.load(String(beforeFen));
+        // применим ход
+        const from = String(uciMove).slice(0, 2);
+        const to = String(uciMove).slice(2, 4);
+        const prom = String(uciMove).slice(4);
+        const moveOk = ch.move({ from, to, promotion: prom || undefined });
+
+        const isMate = !!(moveOk && ch.isCheckmate && ch.isCheckmate());
+        if (isMate) {
+          // Кто ходил? sideToMove "до" хода:
+          const moverIsWhite = String(beforeFen).includes(" w ");
+          // Мат в пользу сделавшего ход
+          const mateVal = moverIsWhite ? +1 : -1;
+
+          // Убедимся, что pos1.lines существует и несёт mate
+          pos1.lines = Array.isArray(pos1.lines) ? pos1.lines : [];
+          if (pos1.lines.length === 0) {
+            pos1.lines.push({ pv: [], mate: mateVal });
+          } else {
+            pos1.lines[0] = { ...(pos1.lines[0] || {}), mate: mateVal };
+            if ("cp" in pos1.lines[0] && pos1.lines[0].cp == null) {
+              delete (pos1.lines[0] as any).cp;
+            }
+          }
+        }
+      } catch { /* мягко игнорируем, ничего страшного */ }
+
+      // На всякий случай: если до/после пришли пустые lines, подставим безопасный fallback,
+      // чтобы не падал win%/классификатор. (Мат выше уже расставили.)
+      if (!Array.isArray(pos0.lines) || pos0.lines.length === 0) {
+        pos0.lines = [{ pv: [], cp: 0 }];
+      }
+      if (!Array.isArray(pos1.lines) || pos1.lines.length === 0) {
+        pos1.lines = [{ pv: [], cp: 0 }];
+      }
+      // --- КОНЕЦ ПАТЧА ---
+
       // классификация хода (используем уже существующую логику проекта)
       const classified = getMovesClassification(
         out.positions as any,
@@ -938,12 +979,22 @@ function buildFullReport(args: {
         : [];
       const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
       const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
-      const cpFixed = cpVal == null && mateVal == null ? 0 : cpVal;
-      return { pv, cp: cpFixed, mate: mateVal };
+      return { pv, cp: cpVal, mate: mateVal };
     });
+    const isLast = idx === fens.length - 1;
+    const hdr = (reqBody && (reqBody as any).header) || {};
+    const resStr: string = String(hdr?.Result || hdr?.result || "");
+
     if (lines.length === 0) {
-      lines.push({ pv: [], cp: 0, best: "" });
-    }
+      if (isLast && (resStr === "1-0" || resStr === "0-1")) {
+        // Игра закончилась победой: задаём mate по результату
+        const mate = resStr === "1-0" ? +1 : -1;
+        lines.push({ pv: [], mate, best: "" });
+      } else {
+        // Нетерминальная/ничейная позиция: безопасный fallback, чтобы не падал win%/accuracy
+        lines.push({ pv: [], cp: 0, best: "" });
+      }
+}
     const firstPv = lines[0]?.pv;
     const best =
       (posAny as any)?.bestMove ??
