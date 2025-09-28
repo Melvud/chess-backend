@@ -562,19 +562,18 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       multiPv,
       useNNUE,
       elo,
-      // новое для real-time классификации:
+      // real-time формат:
       beforeFen,
       afterFen,
       uciMove,
     } = req.body ?? {};
 
-    // --- Режим real-time классификации хода по двум FEN + UCI ---
-    // Если пришли beforeFen/afterFen/uciMove — считаем это запросом на оценку хода.
-    if (beforeFen && afterFen && uciMove) {
-      const effDepth = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
-      const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
+    const effDepth   = Number.isFinite(depth)   ? Number(depth)   : DEFAULT_DEPTH;
+    const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
 
-      // считаем как «мини-партию» из двух позиций
+    // === РЕЖИМ real-time: анализ ОДНОГО хода (две позиции + UCI) ===
+    if (typeof beforeFen === "string" && typeof afterFen === "string" && typeof uciMove === "string") {
+      // 1) Считаем мини-партию из двух позиций, чтобы получить линии ДО и ПОСЛЕ
       const baseParams: EvaluateGameParams = {
         fens: [String(beforeFen), String(afterFen)],
         uciMoves: [String(uciMove)],
@@ -584,77 +583,132 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         ...(elo !== undefined ? { elo } : {}),
       } as any;
 
+      // workers=1 → используем singleton-движок (без оверсабскрипшна CPU)
       const out: GameEval = await evaluateGameParallel(baseParams, 1);
 
-      // позиции 0 — ДО, 1 — ПОСЛЕ
-      const pos0: any = (out as any)?.positions?.[0] ?? {};
-      const pos1: any = (out as any)?.positions?.[1] ?? {};
+      // 2) Нормализуем positions в «клиентский» вид, как в buildFullReport()
+      type ClientLine = { pv: string[]; cp?: number; mate?: number; best?: string };
+      type ClientPosition = { fen: string; idx: number; lines: ClientLine[] };
 
-      // аккуратная BEST для «до» (если не пришёл явный bestMove)
-      const bestFromBefore =
-        String(pos0?.bestMove ?? pos0?.lines?.[0]?.pv?.[0] ?? "") || undefined;
+      const rawPositions: any[] = Array.isArray((out as any)?.positions) ? (out as any).positions : [];
+      const fens2 = [String(beforeFen), String(afterFen)];
+      const positions: ClientPosition[] = fens2.map((fenStr: string, idx: number) => {
+        const posAny: any = rawPositions[idx] ?? {};
+        const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
+        const lines: ClientLine[] = rawLines.map((l: any) => {
+          const pv: string[] = Array.isArray(l?.pv)
+            ? l.pv
+            : Array.isArray(l?.pv?.moves)
+            ? l.pv.moves
+            : [];
+          const cpVal   = typeof l?.cp   === "number" ? l.cp   : undefined;
+          const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
+          return { pv, cp: cpVal, mate: mateVal };
+        });
 
+        if (lines.length === 0) {
+          // безопасный fallback как в buildFullReport
+          lines.push({ pv: [], cp: 0, best: "" });
+        }
 
-            // --- ПАТЧ: гарантируем mate для матующей позиции и непустые lines ---
+        // best на первой линии — из posAny.bestMove или из pv[0]
+        const firstPv = lines[0]?.pv;
+        const best =
+          (posAny as any)?.bestMove ??
+          (Array.isArray(firstPv) ? firstPv[0] : undefined) ??
+          "";
+        if (lines[0]) {
+          lines[0].best = String(best);
+        }
+        return { fen: String(fenStr), idx, lines };
+      });
+
+      // 3) Гарантируем mate для матующего хода (логика сохранена)
       try {
         const ch = new Chess();
         ch.load(String(beforeFen));
-        // применим ход
         const from = String(uciMove).slice(0, 2);
-        const to = String(uciMove).slice(2, 4);
-        const prom = String(uciMove).slice(4);
-        const moveOk = ch.move({ from, to, promotion: prom || undefined });
-
-        const isMate = !!(moveOk && ch.isCheckmate && ch.isCheckmate());
-        if (isMate) {
-          // Кто ходил? sideToMove "до" хода:
+        const to   = String(uciMove).slice(2, 4);
+        const prom = String(uciMove).slice(4) || undefined;
+        const mv = ch.move({ from, to, promotion: prom as any });
+        if (mv && ch.isCheckmate && ch.isCheckmate()) {
           const moverIsWhite = String(beforeFen).includes(" w ");
-          // Мат в пользу сделавшего ход
           const mateVal = moverIsWhite ? +1 : -1;
-
-          // Убедимся, что pos1.lines существует и несёт mate
-          pos1.lines = Array.isArray(pos1.lines) ? pos1.lines : [];
-          if (pos1.lines.length === 0) {
-            pos1.lines.push({ pv: [], mate: mateVal });
+          positions[1].lines = Array.isArray(positions[1].lines) ? positions[1].lines : [];
+          if (positions[1].lines.length === 0) {
+            positions[1].lines.push({ pv: [], mate: mateVal });
           } else {
-            pos1.lines[0] = { ...(pos1.lines[0] || {}), mate: mateVal };
-            if ("cp" in pos1.lines[0] && pos1.lines[0].cp == null) {
-              delete (pos1.lines[0] as any).cp;
-            }
+            positions[1].lines[0] = { ...(positions[1].lines[0] || {}), mate: mateVal };
+            delete (positions[1].lines[0] as any).cp;
           }
         }
-      } catch { /* мягко игнорируем, ничего страшного */ }
+      } catch { /* no-op */ }
 
-      // На всякий случай: если до/после пришли пустые lines, подставим безопасный fallback,
-      // чтобы не падал win%/классификатор. (Мат выше уже расставили.)
-      if (!Array.isArray(pos0.lines) || pos0.lines.length === 0) {
-        pos0.lines = [{ pv: [], cp: 0 }];
-      }
-      if (!Array.isArray(pos1.lines) || pos1.lines.length === 0) {
-        pos1.lines = [{ pv: [], cp: 0 }];
-      }
-      // --- КОНЕЦ ПАТЧА ---
+      // 4) Если у позиции «до» всё ещё нет понятного best (ни pv[0], ни bestMove) — добираем быстрым вызовом движка
+      const needBestFix =
+        !positions[0]?.lines?.[0]?.best ||
+        String(positions[0].lines[0].best).trim() === "";
 
-      // классификация хода (используем уже существующую логику проекта)
+      if (needBestFix) {
+        try {
+          const engine = await getSingletonEngine();
+          const eval0 = await engine.evaluatePositionWithUpdate({
+            fen: String(beforeFen),
+            depth: effDepth,
+            multiPv: effMultiPv,
+            useNNUE,
+            elo,
+          } as any);
+          const rawTop = Array.isArray(eval0?.lines) ? eval0.lines[0] : undefined;
+          const bestFromEngine: string =
+            (eval0 as any)?.bestMove ??
+            (Array.isArray(rawTop?.pv) ? rawTop.pv[0] : undefined) ??
+            "";
+
+          if (bestFromEngine) {
+            positions[0].lines[0].best = String(bestFromEngine);
+            // чтобы classifier имел и pv[0]
+            const hasPv0 = Array.isArray(positions[0].lines[0].pv) && positions[0].lines[0].pv.length > 0;
+            if (!hasPv0) {
+              positions[0].lines[0].pv = [String(bestFromEngine)];
+            }
+          }
+        } catch {
+          // мягко проигнорируем — останется fallback cp:0, classifier тогда не даст "brilliant"
+        }
+      }
+
+      // 5) Fallback ещё раз, если вдруг пустые lines после всех манипуляций
+      if (!Array.isArray(positions[0].lines) || positions[0].lines.length === 0) {
+        positions[0].lines = [{ pv: [], cp: 0 }];
+      }
+      if (!Array.isArray(positions[1].lines) || positions[1].lines.length === 0) {
+        positions[1].lines = [{ pv: [], cp: 0 }];
+      }
+
+      // 6) Лучший ход «до» (совет движка из позиции 0) — уже гарантирован выше
+      const bestFromBefore =
+        String(positions[0]?.lines?.[0]?.best ?? positions[0]?.lines?.[0]?.pv?.[0] ?? "") || undefined;
+
+      // 7) Классификация хода (теперь на корректно нормализованных позициях с установленным best)
       const classified = getMovesClassification(
-        out.positions as any,
+        positions as any,
         [String(uciMove)],
-        [String(beforeFen), String(afterFen)],
+        [String(beforeFen), String(afterFen)]
       ) as any[];
 
       const clsRaw: any | undefined = classified?.[1]?.moveClassification;
       const cls = toClientMoveClassUpper(clsRaw);
 
-      // Возвращаем линии «после хода», bestMove с «до» (совет движка из предыдущей позиции)
-      // ВАЖНО: не обнуляем оценку при мате — в линиях остаётся mate (а cp не трогаем).
+      // 8) Отдаём «после» (позиция 1) + bestMove + строку классификации
       return res.json({
-        lines: Array.isArray(pos1?.lines) ? pos1.lines : [],
+        lines: positions[1].lines,
         bestMove: bestFromBefore,
-        moveClassification: cls, // дополнительное поле (клиент со своим DTO игнорирует лишнее)
+        moveClassification: cls,
       });
     }
 
-    // --- Обычный режим оценки одной позиции (как было) ---
+    // === РЕЖИМ позиции (как был): { fen, depth, multiPv } ===
     if (!fen || typeof fen !== "string") {
       return res.status(400).json({ error: "fen_required" });
     }
@@ -667,7 +721,6 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       elo,
     } as any;
 
-    // Не трогаем mate/cp: внутри UCI парсера mate остаётся mate, cp — cp (не ставим нули).
     const finalEval = await engine.evaluatePositionWithUpdate(params);
     res.json(finalEval);
   } catch (e: any) {
@@ -676,6 +729,8 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       .json({ error: "evaluate_position_failed", details: String(e?.message ?? e) });
   }
 });
+
+
 
 
 app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
