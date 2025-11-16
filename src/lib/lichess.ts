@@ -89,7 +89,7 @@ const fetchLichessEval = async (
       { method: "GET", signal: AbortSignal.timeout(200) }
     );
 
-    return res.json();
+    return res.json() as Promise<LichessResponse<LichessEvalBody>>;
   } catch (error) {
     console.error(error);
 
@@ -111,7 +111,7 @@ export const fetchLichessGame = async (
       throw new Error(`Error fetching game ${gameId} from Lichess`);
     }
 
-    const gameData: LichessGame = await res.json();
+    const gameData = await res.json() as LichessGame;
     return gameData.pgn;
   } catch (error) {
     console.error(error);

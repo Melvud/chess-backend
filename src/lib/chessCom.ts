@@ -17,7 +17,7 @@ export const getChessComUserRecentGames = async (
     { method: "GET", signal }
   );
 
-  const data = await res.json();
+  const data: any = await res.json();
 
   if (
     res.status >= 400 &&
@@ -37,7 +37,7 @@ export const getChessComUserRecentGames = async (
       `https://api.chess.com/pub/player/${username}/games/${yearToFetch}/${previousPaddedMonth}`
     );
 
-    const dataPreviousMonth = await resPreviousMonth.json();
+    const dataPreviousMonth: any = await resPreviousMonth.json();
 
     games.push(...(dataPreviousMonth?.games ?? []));
   }
@@ -57,7 +57,7 @@ export const getChessComUserAvatar = async (
   const usernameParam = encodeURIComponent(username.trim().toLowerCase());
 
   const res = await fetch(`https://api.chess.com/pub/player/${usernameParam}`);
-  const data = await res.json();
+  const data: any = await res.json();
   const avatarUrl = data?.avatar;
 
   return typeof avatarUrl === "string" ? avatarUrl : null;

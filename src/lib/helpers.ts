@@ -48,8 +48,8 @@ export function ensureNodeLikeBrowserGlobals(workerFileUrl: string) {
         // Исправлено: используем ArrayBuffer вместо Buffer
         return new Response(buf.buffer, { status: 200 });
       }
-      const { fetch: undiciFetch } = await import("undici");
-      return undiciFetch(u, init);
+      // Node 18+ имеет встроенный fetch
+      return fetch(u, init);
     };
   } else {
     const realFetch = g.fetch.bind(globalThis);
