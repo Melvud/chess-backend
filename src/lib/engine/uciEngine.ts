@@ -106,16 +106,14 @@ function resolveEnginePath(p: string): string {
 }
 
 export class UciEngine {
-  private engineName!: EngineName;
   private currentProc: ChildProcessWithoutNullStreams | null = null;
 
-  private constructor(engineName: EngineName) {
-    this.engineName = engineName;
+  private constructor() {
   }
 
   /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
   static async create(engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
-    const eng = new UciEngine(engineName);
+    const eng = new UciEngine();
     eng.ensureBinary();
     return eng;
   }
@@ -205,7 +203,6 @@ export class UciEngine {
     proc: ChildProcessWithoutNullStreams,
     fen: string,
     depth: number,
-    multiPv: number,
     onDepth?: (d: number, pct: number) => void,
   ): Promise<PositionEval> {
     const lines: string[] = [];
@@ -338,7 +335,6 @@ export class UciEngine {
         proc,
         fen,
         depth,
-        multiPv,
         undefined, // глубинный прогресс внутри партии не транслируем наружу
       );
       positions.push(pe);

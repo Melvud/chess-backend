@@ -1258,10 +1258,10 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
       return analysis;
     });
 
-    res.json(result);
+    return res.json(result);
   } catch (e: any) {
     if (progressId) setProgress(progressId, { stage: "done" as ProgressStage });
-    res.status(500).json({
+    return res.status(500).json({
       error: "evaluate_game_failed",
       details: String(e?.message ?? e),
     });
