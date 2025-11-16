@@ -41,10 +41,13 @@ RUN wget https://github.com/official-stockfish/Stockfish/releases/download/sf_17
 # ============================================
 # Stage 3: Production image
 # ============================================
-FROM node:18-alpine
+FROM node:18-slim
 
-# Установка зависимостей для Stockfish (glibc для Alpine)
-RUN apk add --no-cache libc6-compat libstdc++
+# Установка зависимостей для Stockfish
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    file \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -60,6 +63,9 @@ COPY --from=builder /app/dist ./dist
 # Создаем директорию для бинарников и копируем Stockfish с правами на выполнение
 RUN mkdir -p ./bin
 COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfish
+
+# Проверяем, что файл скопировался и имеет права на выполнение
+RUN ls -la ./bin/stockfish && file ./bin/stockfish
 
 # Копируем public (если есть дополнительные файлы)
 # COPY public ./public
