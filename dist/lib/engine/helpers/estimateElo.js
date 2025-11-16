@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeEstimatedElo = void 0;
-const math_1 = require("@/lib/math");
+const math_1 = require("../../math");
 const computeEstimatedElo = (positions, whiteElo, blackElo) => {
     if (positions.length < 2) {
         return undefined;

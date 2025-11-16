@@ -150,6 +150,19 @@ export class UciEngine {
     const bin = ENGINE_PATH;
     const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
     this.currentProc = proc;
+
+    // Обработка ошибок при запуске процесса
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      console.error(`Failed to spawn Stockfish at ${bin}:`, err);
+      if (err.code === "EACCES") {
+        console.error("Permission denied. The binary may not have execute permissions.");
+        console.error("Try running: chmod +x", bin);
+      } else if (err.code === "ENOENT") {
+        console.error("File not found. Check STOCKFISH_PATH environment variable.");
+      }
+      throw err;
+    });
+
     proc.on("exit", () => {
       if (this.currentProc === proc) this.currentProc = null;
     });

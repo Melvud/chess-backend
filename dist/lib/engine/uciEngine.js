@@ -41,7 +41,7 @@ const node_child_process_1 = require("node:child_process");
 const path = __importStar(require("node:path"));
 const fs = __importStar(require("node:fs"));
 const node_os_1 = __importDefault(require("node:os"));
-const parseResults_1 = require("@/lib/engine/helpers/parseResults");
+const parseResults_1 = require("../engine/helpers/parseResults");
 function parseInfoLineForProgress(s) {
     const get = (key) => {
         const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
@@ -135,6 +135,17 @@ class UciEngine {
         const bin = ENGINE_PATH;
         const proc = (0, node_child_process_1.spawn)(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
         this.currentProc = proc;
+        proc.on("error", (err) => {
+            console.error(`Failed to spawn Stockfish at ${bin}:`, err);
+            if (err.code === "EACCES") {
+                console.error("Permission denied. The binary may not have execute permissions.");
+                console.error("Try running: chmod +x", bin);
+            }
+            else if (err.code === "ENOENT") {
+                console.error("File not found. Check STOCKFISH_PATH environment variable.");
+            }
+            throw err;
+        });
         proc.on("exit", () => {
             if (this.currentProc === proc)
                 this.currentProc = null;
