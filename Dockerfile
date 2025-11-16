@@ -44,10 +44,15 @@ RUN wget https://github.com/official-stockfish/Stockfish/releases/download/sf_17
 # ============================================
 FROM node:18-slim
 
-# Установка зависимостей для Stockfish
+# Установка зависимостей для Stockfish Ubuntu binary
+# Stockfish требует glibc и стандартные C++ библиотеки
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     file \
+    coreutils \
+    libc6 \
+    libstdc++6 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -64,14 +69,20 @@ COPY --from=builder /app/dist ./dist
 # Создаем директорию для бинарников
 RUN mkdir -p ./bin
 
-# Копируем Stockfish
-COPY --from=stockfish-downloader /stockfish/stockfish ./bin/stockfish
-
-# ⚠️ КРИТИЧЕСКИ ВАЖНО: Явно устанавливаем права на выполнение
-RUN chmod +x ./bin/stockfish
+# Копируем Stockfish с явным указанием прав доступа (BuildKit feature)
+COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfish
 
 # Проверяем, что файл существует и имеет права
-RUN ls -la ./bin/stockfish
+RUN ls -la ./bin/stockfish && file ./bin/stockfish
+
+# Тестируем запуск Stockfish (должен вывести "Stockfish 17 by...")
+RUN echo "Testing Stockfish execution..." && \
+    timeout 5s ./bin/stockfish <<< "quit" || \
+    (echo "ERROR: Failed to execute Stockfish!" && exit 1)
+
+# Копируем и настраиваем entrypoint скрипт
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Переменные окружения по умолчанию
 ENV NODE_ENV=production
@@ -91,6 +102,9 @@ EXPOSE 8080
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+
+# Используем entrypoint для установки прав при запуске
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Запускаем сервер
 CMD ["node", "dist/server.js"]
