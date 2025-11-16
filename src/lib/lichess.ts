@@ -1,3 +1,4 @@
+// src/lib/lichess.ts
 import { LineEval, PositionEval } from "@/types/eval";
 import { sortLines } from "./engine/helpers/parseResults";
 import {
@@ -8,6 +9,7 @@ import {
 } from "@/types/lichess";
 import { formatUciPv } from "./chess";
 import { LoadedGame } from "@/types/game";
+import { logErrorToSentry } from "./helpers";
 
 export const getLichessEval = async (
   fen: string,
@@ -133,7 +135,7 @@ const formatLichessGame = (data: LichessGame): LoadedGame => {
       title: data.players.black.user?.title,
     },
     result: getGameResult(data),
-    timeControl: `${Math.floor(data.clock?.initial / 60 || 0)}+${data.clock?.increment || 0}`,
+    timeControl: `${Math.floor((data.clock?.initial ?? 0) / 60)}+${data.clock?.increment ?? 0}`,
     date: new Date(data.createdAt || data.lastMoveAt).toLocaleDateString(),
     movesNb: data.moves?.split(" ").length || 0,
     url: `https://lichess.org/${data.id}`,

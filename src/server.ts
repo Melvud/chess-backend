@@ -1,4 +1,7 @@
 // src/server.ts
+// Сервер для анализа шахматных партий с использованием нативного Stockfish.
+// СИНХРОНИЗИРОВАНО с LocalGameAnalyzer.kt
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -872,8 +875,9 @@ function pgnToFenAndUci(pgn: string): {
 
   const replay = new Chess();
   if (header?.FEN && (header?.SetUp === "1" || header?.SetUp === "true")) {
-    const loaded = replay.load(header.FEN);
-    if (!loaded) {
+    try {
+      replay.load(header.FEN);
+    } catch (e) {
       throw new Error(`Bad FEN in header: ${header.FEN}`);
     }
   }

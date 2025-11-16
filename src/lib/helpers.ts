@@ -1,30 +1,37 @@
-// src/lib/engine/helpers.ts
+// src/lib/helpers.ts
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs/promises";
 
-// Преобразует публичный URL (например, "/engines/stockfish-17/stockfish-17-lite.js")
-// в абсолютный file:// URL внутри проекта (…/public/engines/…/stockfish-17-lite.js)
-export function resolveEngineWorkerFileUrl(enginePublicPath: string): string {
-  const rel = enginePublicPath.replace(/^\/+/, ""); // убираем ведущие "/"
-  const fsPath = path.resolve(process.cwd(), "public", rel);
-  return pathToFileURL(fsPath).href; // "file://…"
+/**
+ * Добавляет ведущий 0 к числу если оно < 10
+ */
+export function getPaddedNumber(num: number): string {
+  return num < 10 ? `0${num}` : `${num}`;
 }
 
-// Гарантируем, что глобальная среда в Node приблизительно похожа на браузерную,
-// т.к. бандлы SF иногда ожидают наличие window/self/location/navigator.
+/**
+ * Преобразует публичный URL в file:// URL
+ */
+export function resolveEngineWorkerFileUrl(enginePublicPath: string): string {
+  const rel = enginePublicPath.replace(/^\/+/, "");
+  const fsPath = path.resolve(process.cwd(), "public", rel);
+  return pathToFileURL(fsPath).href;
+}
+
+/**
+ * Настройка глобальных объектов для работы с Stockfish
+ */
 export function ensureNodeLikeBrowserGlobals(workerFileUrl: string) {
   const g = globalThis as any;
 
   if (typeof g.window === "undefined") g.window = g;
   if (typeof g.self === "undefined") g.self = g;
 
-  // location нужен, чтобы относительные пути к .wasm резолвились от места воркера
   if (typeof g.location === "undefined") {
     try {
       g.location = new URL(workerFileUrl);
     } catch {
-      // fallback на корень
       g.location = new URL("file:///");
     }
   }
@@ -33,33 +40,40 @@ export function ensureNodeLikeBrowserGlobals(workerFileUrl: string) {
     g.navigator = { userAgent: "node" };
   }
 
-  // В Node 18+ есть глобальный fetch (undici), но он не умеет file://.
-  // Подменим только file://, а http/https отдадим реальному fetch.
   if (typeof g.fetch === "undefined") {
     g.fetch = async (input: any, init?: any) => {
       const u = new URL(String(input), g.location?.href ?? "file:///");
       if (u.protocol === "file:") {
         const buf = await fs.readFile(u);
-        return new Response(buf, { status: 200 });
+        // Исправлено: используем ArrayBuffer вместо Buffer
+        return new Response(buf.buffer, { status: 200 });
       }
       const { fetch: undiciFetch } = await import("undici");
       return undiciFetch(u, init);
     };
   } else {
-    // Оборачиваем существующий fetch, чтобы добавить поддержку file://
     const realFetch = g.fetch.bind(globalThis);
     g.fetch = async (input: any, init?: any) => {
       try {
         const u = new URL(String(input), g.location?.href ?? "file:///");
         if (u.protocol === "file:") {
           const buf = await fs.readFile(u);
-          return new Response(buf, { status: 200 });
+          // Исправлено: используем ArrayBuffer вместо Buffer
+          return new Response(buf.buffer, { status: 200 });
         }
         return realFetch(u, init);
       } catch {
-        // Если URL не парсится — просто отдадим в реальный fetch
         return realFetch(input, init);
       }
     };
   }
+}
+
+/**
+ * Заглушка для логирования ошибок (можно заменить на Sentry)
+ */
+export function logErrorToSentry(error: any, context?: any) {
+  console.error("[ERROR]", error, context);
+  // TODO: Интеграция с Sentry
+  // Sentry.captureException(error, { extra: context });
 }

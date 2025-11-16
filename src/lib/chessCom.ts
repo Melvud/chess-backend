@@ -1,3 +1,4 @@
+// src/lib/chessCom.ts
 import { ChessComGame } from "@/types/chessCom";
 import { getPaddedNumber } from "./helpers";
 import { LoadedGame } from "@/types/game";
@@ -67,7 +68,7 @@ const formatChessComGame = (data: ChessComGame): LoadedGame => {
   const movesNb = data.pgn.match(/\d+?\. /g)?.length;
 
   return {
-    id: data.uuid || data.url?.split("/").pop() || data.id,
+    id: data.uuid || data.url?.split("/").pop() || data.id || `game-${Date.now()}`,
     pgn: data.pgn || "",
     white: {
       name: data.white?.username || "White",
