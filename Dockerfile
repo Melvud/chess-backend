@@ -57,10 +57,9 @@ RUN npm ci --omit=dev
 # Копируем собранный код из builder
 COPY --from=builder /app/dist ./dist
 
-# Создаем директорию для бинарников и копируем Stockfish
+# Создаем директорию для бинарников и копируем Stockfish с правами на выполнение
 RUN mkdir -p ./bin
-COPY --from=stockfish-downloader /stockfish/stockfish ./bin/stockfish
-RUN chmod +x ./bin/stockfish
+COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfish
 
 # Копируем public (если есть дополнительные файлы)
 # COPY public ./public

@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getResultProperty = exports.sortLines = exports.parseEvaluationResults = void 0;
-const chess_1 = require("@/lib/chess");
+const chess_1 = require("../../chess");
 const parseEvaluationResults = (results, fen) => {
     const parsedResults = {
         lines: [],
