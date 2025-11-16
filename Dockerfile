@@ -77,7 +77,7 @@ RUN ls -la ./bin/stockfish && file ./bin/stockfish
 
 # Тестируем запуск Stockfish (должен вывести "Stockfish 17 by...")
 RUN echo "Testing Stockfish execution..." && \
-    timeout 5s ./bin/stockfish <<< "quit" || \
+    echo "quit" | timeout 5s ./bin/stockfish || \
     (echo "ERROR: Failed to execute Stockfish!" && exit 1)
 
 # Копируем и настраиваем entrypoint скрипт
