@@ -1,0 +1,70 @@
+# fly.toml - Chess Analysis Backend configuration for Fly.io
+
+app = "chess-analysis-backend"
+primary_region = "ams" # Amsterdam - можно изменить на ближайший регион
+
+# Консоль для запуска команд внутри контейнера
+console_command = "/bin/sh"
+
+[build]
+  # Используем Dockerfile из текущей директории
+  dockerfile = "Dockerfile"
+
+[env]
+  # Основные настройки
+  NODE_ENV = "production"
+  PORT = "8080"
+  LOG_LEVEL = "info"
+  
+  # Путь к Stockfish (внутри контейнера)
+  STOCKFISH_PATH = "/app/bin/stockfish"
+  
+  # Настройки движка
+  ENGINE_NAME = "Stockfish17Lite"
+  ENGINE_DEPTH = "16"
+  ENGINE_MULTIPV = "3"
+  
+  # CPU и память (будут переопределены в зависимости от размера VM)
+  ENGINE_THREADS = "2"
+  ENGINE_HASH_MB = "512"
+  ENGINE_WORKERS_MAX = "2"
+  ENGINE_MAX_CONCURRENT_JOBS = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true  # Автоматическая остановка при неактивности
+  auto_start_machines = true # Автоматический запуск при запросе
+  min_machines_running = 0   # Минимум машин работает (0 = остановка при неактивности)
+  
+  # Настройки проверки здоровья
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  # Health check
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+# Настройки виртуальной машины
+[[vm]]
+  # Размер VM - выбирай в зависимости от нагрузки:
+  # shared-cpu-1x - 1 CPU, 256 MB RAM (бесплатный tier)
+  # shared-cpu-2x - 2 CPU, 512 MB RAM
+  # shared-cpu-4x - 4 CPU, 1 GB RAM
+  # shared-cpu-8x - 8 CPU, 2 GB RAM
+  # performance-1x - 1 dedicated CPU, 2 GB RAM
+  # performance-2x - 2 dedicated CPU, 4 GB RAM
+  
+  size = "shared-cpu-2x"  # Рекомендуется для шахматного анализа
+  memory = "1gb"          # Дополнительная память (важно для Stockfish)
+
+# Метрики и мониторинг
+[metrics]
+  port = 9091
+  path = "/metrics"
