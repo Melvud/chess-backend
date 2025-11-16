@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLineWinPercentage = exports.getPositionWinPercentage = void 0;
-const math_1 = require("../../math");
+const math_1 = require("@/lib/math");
 const getPositionWinPercentage = (position) => {
     return (0, exports.getLineWinPercentage)(position.lines[0]);
 };

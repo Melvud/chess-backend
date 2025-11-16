@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 type LogLevel = "debug" | "info" | "warn" | "error";
-export declare function makeReqId(): string;
+export declare function makeReqId(): any;
 export declare function log(level: LogLevel, msg: string, meta?: Record<string, any>): void;
 export declare function reqLogMiddleware(): (req: Request, res: Response, next: NextFunction) => void;
 export declare function withStepLogs<T extends (...args: any[]) => any>(name: string, fn: T): T;

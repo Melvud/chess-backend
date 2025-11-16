@@ -1,9 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchLichessGame = exports.getLichessUserRecentGames = exports.getLichessEval = void 0;
-const parseResults_1 = require("./engine/helpers/parseResults");
-const lichess_1 = require("../types/lichess");
-const chess_1 = require("./chess");
+const parseResults_1 = require("@/lib/engine/helpers/parseResults");
+const lichess_1 = require("@/types/lichess");
+const chess_1 = require("@/lib/chess");
 const helpers_1 = require("./helpers");
 const getLichessEval = async (fen, multiPv = 1) => {
     try {
