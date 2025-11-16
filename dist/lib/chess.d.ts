@@ -1,7 +1,7 @@
-import { EvaluateGameParams, LineEval, PositionEval } from "@/types/eval";
-import { Game, Player } from "@/types/game";
+import { EvaluateGameParams, LineEval, PositionEval } from "../types/eval";
+import { Game, Player } from "../types/game";
 import { Chess, Square } from "chess.js";
-import { Color } from "@/types/enums";
+import { Color } from "../types/enums";
 export declare const getEvaluateGameParams: (game: Chess) => EvaluateGameParams;
 export declare const getGameFromPgn: (pgn: string) => Chess;
 export declare const formatGameToDatabase: (game: Chess) => Omit<Game, "id">;

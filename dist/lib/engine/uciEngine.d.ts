@@ -1,5 +1,5 @@
-import type { EngineName } from "@/types/enums";
-import type { EvaluateGameParams, EvaluatePositionWithUpdateParams, GameEval, PositionEval } from "@/types/eval";
+import type { EngineName } from "../../types/enums";
+import type { EvaluateGameParams, EvaluatePositionWithUpdateParams, GameEval, PositionEval } from "../../types/eval";
 export declare class UciEngine {
     private currentProc;
     private constructor();
