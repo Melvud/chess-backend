@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.4
+
 # Dockerfile для Chess Analysis Backend
 # Multi-stage build для оптимизации размера
 
@@ -29,10 +31,9 @@ FROM alpine:latest AS stockfish-downloader
 WORKDIR /stockfish
 
 # Устанавливаем wget для скачивания
-RUN apk add --no-cache wget unzip
+RUN apk add --no-cache wget
 
 # Скачиваем Stockfish 17 для Linux
-# Используем официальный релиз
 RUN wget https://github.com/official-stockfish/Stockfish/releases/download/sf_17/stockfish-ubuntu-x86-64-avx2.tar \
     && tar -xf stockfish-ubuntu-x86-64-avx2.tar \
     && mv stockfish/stockfish-ubuntu-x86-64-avx2 stockfish \
@@ -57,12 +58,17 @@ RUN npm ci --omit=dev
 # Копируем собранный код из builder
 COPY --from=builder /app/dist ./dist
 
-# Создаем директорию для бинарников и копируем Stockfish с правами на выполнение
+# Создаем директорию для бинарников
 RUN mkdir -p ./bin
-COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfish
 
-# Копируем public (если есть дополнительные файлы)
-# COPY public ./public
+# Копируем Stockfish
+COPY --from=stockfish-downloader /stockfish/stockfish ./bin/stockfish
+
+# ⚠️ КРИТИЧЕСКИ ВАЖНО: Явно устанавливаем права на выполнение
+RUN chmod +x ./bin/stockfish
+
+# Проверяем, что файл существует и имеет права
+RUN ls -la ./bin/stockfish
 
 # Переменные окружения по умолчанию
 ENV NODE_ENV=production
