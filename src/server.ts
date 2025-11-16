@@ -11,13 +11,13 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import { Chess } from "chess.js";
 
-import { EngineName, MoveClassification } from "./types/enums";
+import { EngineName, MoveClassification } from "@/types/enums";
 import type {
   GameEval,
   EvaluateGameParams,
   EvaluatePositionWithUpdateParams,
   PositionEval,
-} from "./types/eval";
+} from "@/types/eval";
 
 import { computeEstimatedElo } from "@/lib/engine/helpers/estimateElo";
 import { getMovesClassification } from "@/lib/engine/helpers/moveClassification";
@@ -30,7 +30,7 @@ import {
   getWeightedMean,
 } from "@/lib/math";
 
-import { UciEngine } from "./lib/engine/uciEngine";
+import { UciEngine } from "@/lib/engine/uciEngine";
 
 // -------------------- ENV --------------------
 const PORT = Number(process.env.PORT ?? 8080);

@@ -1,13 +1,13 @@
 // src/lib/lichess.ts
 import { LineEval, PositionEval } from "@/types/eval";
-import { sortLines } from "./engine/helpers/parseResults";
+import { sortLines } from "@/lib/engine/helpers/parseResults";
 import {
   LichessError,
   LichessEvalBody,
   LichessGame,
   LichessResponse,
 } from "@/types/lichess";
-import { formatUciPv } from "./chess";
+import { formatUciPv } from "@/lib/chess";
 import { LoadedGame } from "@/types/game";
 import { logErrorToSentry } from "./helpers";
 
