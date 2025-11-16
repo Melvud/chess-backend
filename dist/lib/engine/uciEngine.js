@@ -41,7 +41,7 @@ const node_child_process_1 = require("node:child_process");
 const path = __importStar(require("node:path"));
 const fs = __importStar(require("node:fs"));
 const node_os_1 = __importDefault(require("node:os"));
-const parseResults_1 = require("../engine/helpers/parseResults");
+const parseResults_1 = require("@/lib/engine/helpers/parseResults");
 function parseInfoLineForProgress(s) {
     const get = (key) => {
         const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
@@ -68,6 +68,18 @@ function waitForBestmove(proc) {
         const handler = (chunk) => {
             const str = chunk.toString("utf8");
             if (str.includes("bestmove")) {
+                proc.stdout.off("data", handler);
+                resolve();
+            }
+        };
+        proc.stdout.on("data", handler);
+    });
+}
+function waitForReadyOk(proc) {
+    return new Promise((resolve) => {
+        const handler = (chunk) => {
+            const str = chunk.toString("utf8");
+            if (str.includes("readyok")) {
                 proc.stdout.off("data", handler);
                 resolve();
             }
@@ -159,6 +171,7 @@ class UciEngine {
             this.send(proc, `setoption name UCI_Elo value ${elo}`);
         }
         this.send(proc, "isready");
+        await waitForReadyOk(proc);
         this.send(proc, "ucinewgame");
     }
     async evaluateFenOnSession(proc, fen, depth, onDepth) {

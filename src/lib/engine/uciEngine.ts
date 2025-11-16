@@ -67,6 +67,20 @@ function waitForBestmove(proc: ChildProcessWithoutNullStreams): Promise<void> {
   });
 }
 
+// Асинхронно ждём появления readyok в stdout движка и резолвим промис.
+function waitForReadyOk(proc: ChildProcessWithoutNullStreams): Promise<void> {
+  return new Promise((resolve) => {
+    const handler = (chunk: Buffer) => {
+      const str = chunk.toString("utf8");
+      if (str.includes("readyok")) {
+        proc.stdout.off("data", handler);
+        resolve();
+      }
+    };
+    proc.stdout.on("data", handler);
+  });
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Значения по умолчанию для настроек движка
 // ────────────────────────────────────────────────────────────────────
@@ -195,6 +209,7 @@ export class UciEngine {
     }
 
     this.send(proc, "isready");
+    await waitForReadyOk(proc); // Wait for engine to be ready before continuing
     this.send(proc, "ucinewgame"); // старт новой партии
   }
 
