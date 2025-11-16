@@ -64,14 +64,15 @@ COPY --from=builder /app/dist ./dist
 # Создаем директорию для бинарников
 RUN mkdir -p ./bin
 
-# Копируем Stockfish
-COPY --from=stockfish-downloader /stockfish/stockfish ./bin/stockfish
-
-# ⚠️ КРИТИЧЕСКИ ВАЖНО: Явно устанавливаем права на выполнение
-RUN chmod +x ./bin/stockfish
+# Копируем Stockfish с явным указанием прав доступа (BuildKit feature)
+COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfish
 
 # Проверяем, что файл существует и имеет права
-RUN ls -la ./bin/stockfish
+RUN ls -la ./bin/stockfish && file ./bin/stockfish
+
+# Копируем и настраиваем entrypoint скрипт
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Переменные окружения по умолчанию
 ENV NODE_ENV=production
@@ -91,6 +92,9 @@ EXPOSE 8080
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+
+# Используем entrypoint для установки прав при запуске
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Запускаем сервер
 CMD ["node", "dist/server.js"]
