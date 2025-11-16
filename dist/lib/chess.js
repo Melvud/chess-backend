@@ -1,18 +1,23 @@
-import { Chess } from "chess.js";
-import { getPositionWinPercentage } from "./engine/helpers/winPercentage";
-export const getEvaluateGameParams = (game) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.formatUciPv = exports.getLineEvalLabel = exports.isCheck = exports.getMaterialDifference = exports.getIsPieceSacrifice = exports.isSimplePieceRecapture = exports.uciMoveParams = exports.getWhoIsCheckmated = exports.getIsStalemate = exports.getEvaluationBarValue = exports.moveLineUciToSan = exports.setGameHeaders = exports.getGameToSave = exports.formatGameToDatabase = exports.getGameFromPgn = exports.getEvaluateGameParams = void 0;
+const chess_js_1 = require("chess.js");
+const winPercentage_1 = require("./engine/helpers/winPercentage");
+const getEvaluateGameParams = (game) => {
     const history = game.history({ verbose: true });
     const fens = history.map((move) => move.before);
     fens.push(history[history.length - 1].after);
     const uciMoves = history.map((move) => move.from + move.to + (move.promotion || ""));
     return { fens, uciMoves };
 };
-export const getGameFromPgn = (pgn) => {
-    const game = new Chess();
+exports.getEvaluateGameParams = getEvaluateGameParams;
+const getGameFromPgn = (pgn) => {
+    const game = new chess_js_1.Chess();
     game.loadPgn(pgn);
     return game;
 };
-export const formatGameToDatabase = (game) => {
+exports.getGameFromPgn = getGameFromPgn;
+const formatGameToDatabase = (game) => {
     const headers = game.getHeaders();
     return {
         pgn: game.pgn(),
@@ -33,12 +38,14 @@ export const formatGameToDatabase = (game) => {
         timeControl: headers.TimeControl,
     };
 };
-export const getGameToSave = (game, board) => {
+exports.formatGameToDatabase = formatGameToDatabase;
+const getGameToSave = (game, board) => {
     if (game.history().length)
         return game;
-    return setGameHeaders(board);
+    return (0, exports.setGameHeaders)(board);
 };
-export const setGameHeaders = (game, params = {}) => {
+exports.getGameToSave = getGameToSave;
+const setGameHeaders = (game, params = {}) => {
     game.setHeader("Event", "Chesskit Game");
     game.setHeader("Site", "Chesskit.org");
     game.setHeader("Date", new Date().toISOString().split("T")[0].replace(/-/g, "."));
@@ -77,11 +84,12 @@ export const setGameHeaders = (game, params = {}) => {
     }
     return game;
 };
-export const moveLineUciToSan = (fen) => {
-    const game = new Chess(fen);
+exports.setGameHeaders = setGameHeaders;
+const moveLineUciToSan = (fen) => {
+    const game = new chess_js_1.Chess(fen);
     return (moveUci) => {
         try {
-            const move = game.move(uciMoveParams(moveUci));
+            const move = game.move((0, exports.uciMoveParams)(moveUci));
             return move.san;
         }
         catch {
@@ -89,8 +97,9 @@ export const moveLineUciToSan = (fen) => {
         }
     };
 };
-export const getEvaluationBarValue = (position) => {
-    const whiteBarPercentage = getPositionWinPercentage(position);
+exports.moveLineUciToSan = moveLineUciToSan;
+const getEvaluationBarValue = (position) => {
+    const whiteBarPercentage = (0, winPercentage_1.getPositionWinPercentage)(position);
     const bestLine = position.lines[0];
     if (bestLine.mate) {
         return { label: `M${Math.abs(bestLine.mate)}`, whiteBarPercentage };
@@ -105,24 +114,28 @@ export const getEvaluationBarValue = (position) => {
     }
     return { whiteBarPercentage, label };
 };
-export const getIsStalemate = (fen) => {
-    const game = new Chess(fen);
+exports.getEvaluationBarValue = getEvaluationBarValue;
+const getIsStalemate = (fen) => {
+    const game = new chess_js_1.Chess(fen);
     return game.isStalemate();
 };
-export const getWhoIsCheckmated = (fen) => {
-    const game = new Chess(fen);
+exports.getIsStalemate = getIsStalemate;
+const getWhoIsCheckmated = (fen) => {
+    const game = new chess_js_1.Chess(fen);
     if (!game.isCheckmate())
         return null;
     return game.turn();
 };
-export const uciMoveParams = (uciMove) => ({
+exports.getWhoIsCheckmated = getWhoIsCheckmated;
+const uciMoveParams = (uciMove) => ({
     from: uciMove.slice(0, 2),
     to: uciMove.slice(2, 4),
     promotion: uciMove.slice(4, 5) || undefined,
 });
-export const isSimplePieceRecapture = (fen, uciMoves) => {
-    const game = new Chess(fen);
-    const moves = uciMoves.map((uciMove) => uciMoveParams(uciMove));
+exports.uciMoveParams = uciMoveParams;
+const isSimplePieceRecapture = (fen, uciMoves) => {
+    const game = new chess_js_1.Chess(fen);
+    const moves = uciMoves.map((uciMove) => (0, exports.uciMoveParams)(uciMove));
     if (moves[0].to !== moves[1].to)
         return false;
     const piece = game.get(moves[0].to);
@@ -130,12 +143,13 @@ export const isSimplePieceRecapture = (fen, uciMoves) => {
         return true;
     return false;
 };
-export const getIsPieceSacrifice = (fen, playedMove, bestLinePvToPlay) => {
+exports.isSimplePieceRecapture = isSimplePieceRecapture;
+const getIsPieceSacrifice = (fen, playedMove, bestLinePvToPlay) => {
     if (!bestLinePvToPlay.length)
         return false;
-    const game = new Chess(fen);
+    const game = new chess_js_1.Chess(fen);
     const whiteToPlay = game.turn() === "w";
-    const startingMaterialDifference = getMaterialDifference(fen);
+    const startingMaterialDifference = (0, exports.getMaterialDifference)(fen);
     let moves = [playedMove, ...bestLinePvToPlay];
     if (moves.length % 2 === 1) {
         moves = moves.slice(0, -1);
@@ -147,7 +161,7 @@ export const getIsPieceSacrifice = (fen, playedMove, bestLinePvToPlay) => {
     };
     for (const move of moves) {
         try {
-            const fullMove = game.move(uciMoveParams(move));
+            const fullMove = game.move((0, exports.uciMoveParams)(move));
             if (fullMove.captured) {
                 capturedPieces[fullMove.color].push(fullMove.captured);
                 nonCapturingMovesTemp = 1;
@@ -173,13 +187,14 @@ export const getIsPieceSacrifice = (fen, playedMove, bestLinePvToPlay) => {
         capturedPieces["w"].concat(capturedPieces["b"]).every((p) => p === "p")) {
         return false;
     }
-    const endingMaterialDifference = getMaterialDifference(game.fen());
+    const endingMaterialDifference = (0, exports.getMaterialDifference)(game.fen());
     const materialDiff = endingMaterialDifference - startingMaterialDifference;
     const materialDiffPlayerRelative = whiteToPlay ? materialDiff : -materialDiff;
     return materialDiffPlayerRelative < 0;
 };
-export const getMaterialDifference = (fen) => {
-    const game = new Chess(fen);
+exports.getIsPieceSacrifice = getIsPieceSacrifice;
+const getMaterialDifference = (fen) => {
+    const game = new chess_js_1.Chess(fen);
     const board = game.board().flat();
     return board.reduce((acc, square) => {
         if (!square)
@@ -191,6 +206,7 @@ export const getMaterialDifference = (fen) => {
         return acc - getPieceValue(piece);
     }, 0);
 };
+exports.getMaterialDifference = getMaterialDifference;
 const getPieceValue = (piece) => {
     switch (piece) {
         case "p":
@@ -207,11 +223,12 @@ const getPieceValue = (piece) => {
             return 0;
     }
 };
-export const isCheck = (fen) => {
-    const game = new Chess(fen);
+const isCheck = (fen) => {
+    const game = new chess_js_1.Chess(fen);
     return game.inCheck();
 };
-export const getLineEvalLabel = (line) => {
+exports.isCheck = isCheck;
+const getLineEvalLabel = (line) => {
     if (line.cp !== undefined) {
         return `${line.cp > 0 ? "+" : ""}${(line.cp / 100).toFixed(2)}`;
     }
@@ -220,7 +237,8 @@ export const getLineEvalLabel = (line) => {
     }
     return "?";
 };
-export const formatUciPv = (fen, uciMoves) => {
+exports.getLineEvalLabel = getLineEvalLabel;
+const formatUciPv = (fen, uciMoves) => {
     const castlingRights = fen.split(" ")[2];
     let canWhiteCastleKingSide = castlingRights.includes("K");
     let canWhiteCastleQueenSide = castlingRights.includes("Q");
@@ -246,3 +264,5 @@ export const formatUciPv = (fen, uciMoves) => {
         return uci;
     });
 };
+exports.formatUciPv = formatUciPv;
+//# sourceMappingURL=chess.js.map

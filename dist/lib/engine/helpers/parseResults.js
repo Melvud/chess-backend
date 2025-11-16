@@ -1,28 +1,31 @@
-import { formatUciPv } from "../../../lib/chess";
-export const parseEvaluationResults = (results, fen) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getResultProperty = exports.sortLines = exports.parseEvaluationResults = void 0;
+const chess_1 = require("@/lib/chess");
+const parseEvaluationResults = (results, fen) => {
     const parsedResults = {
         lines: [],
     };
     const tempResults = {};
     for (const result of results) {
         if (result.startsWith("bestmove")) {
-            const bestMove = getResultProperty(result, "bestmove");
+            const bestMove = (0, exports.getResultProperty)(result, "bestmove");
             if (bestMove) {
                 parsedResults.bestMove = bestMove;
             }
         }
         if (result.startsWith("info")) {
             const pv = getResultPv(result, fen);
-            const multiPv = getResultProperty(result, "multipv");
-            const depth = getResultProperty(result, "depth");
+            const multiPv = (0, exports.getResultProperty)(result, "multipv");
+            const depth = (0, exports.getResultProperty)(result, "depth");
             if (!pv || !multiPv || !depth)
                 continue;
             if (tempResults[multiPv] &&
                 parseInt(depth) < tempResults[multiPv].depth) {
                 continue;
             }
-            const cp = getResultProperty(result, "cp");
-            const mate = getResultProperty(result, "mate");
+            const cp = (0, exports.getResultProperty)(result, "cp");
+            const mate = (0, exports.getResultProperty)(result, "mate");
             tempResults[multiPv] = {
                 pv,
                 cp: cp ? parseInt(cp) : undefined,
@@ -32,7 +35,7 @@ export const parseEvaluationResults = (results, fen) => {
             };
         }
     }
-    parsedResults.lines = Object.values(tempResults).sort(sortLines);
+    parsedResults.lines = Object.values(tempResults).sort(exports.sortLines);
     const whiteToPlay = fen.split(" ")[1] === "w";
     if (!whiteToPlay) {
         parsedResults.lines = parsedResults.lines.map((line) => ({
@@ -43,7 +46,8 @@ export const parseEvaluationResults = (results, fen) => {
     }
     return parsedResults;
 };
-export const sortLines = (a, b) => {
+exports.parseEvaluationResults = parseEvaluationResults;
+const sortLines = (a, b) => {
     if (a.mate !== undefined && b.mate !== undefined) {
         if (a.mate > 0 && b.mate < 0)
             return -1;
@@ -59,7 +63,8 @@ export const sortLines = (a, b) => {
     }
     return (b.cp ?? 0) - (a.cp ?? 0);
 };
-export const getResultProperty = (result, property) => {
+exports.sortLines = sortLines;
+const getResultProperty = (result, property) => {
     const splitResult = result.split(" ");
     const propertyIndex = splitResult.indexOf(property);
     if (propertyIndex === -1 || propertyIndex + 1 >= splitResult.length) {
@@ -67,6 +72,7 @@ export const getResultProperty = (result, property) => {
     }
     return splitResult[propertyIndex + 1];
 };
+exports.getResultProperty = getResultProperty;
 const getResultPv = (result, fen) => {
     const splitResult = result.split(" ");
     const pvIndex = splitResult.indexOf("pv");
@@ -74,5 +80,6 @@ const getResultPv = (result, fen) => {
         return undefined;
     }
     const rawPv = splitResult.slice(pvIndex + 1);
-    return formatUciPv(fen, rawPv);
+    return (0, chess_1.formatUciPv)(fen, rawPv);
 };
+//# sourceMappingURL=parseResults.js.map

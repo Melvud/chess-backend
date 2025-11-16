@@ -1,4 +1,7 @@
-export const openings = [
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.openings = void 0;
+exports.openings = [
     {
         name: "Amar Gambit",
         fen: "rn1qkbnr/ppp2ppp/8/3p4/5p2/6PB/PPPPP2P/RNBQK2R",
@@ -13604,3 +13607,4 @@ export const openings = [
         fen: "r1bq1rk1/pppnn1bp/3p2p1/3Ppp2/2P1P3/2N2P2/PP2B1PP/R1BQNRK1",
     },
 ];
+//# sourceMappingURL=openings.js.map

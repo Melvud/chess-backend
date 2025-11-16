@@ -1,21 +1,24 @@
-import { getLineWinPercentage, getPositionWinPercentage, } from "./winPercentage";
-import { MoveClassification } from "../../../types/enums";
-import { openings } from "../../../data/openings";
-import { getIsPieceSacrifice, isSimplePieceRecapture } from "../../../lib/chess";
-export const getMovesClassification = (rawPositions, uciMoves, fens) => {
-    const positionsWinPercentage = rawPositions.map(getPositionWinPercentage);
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getMovesClassification = void 0;
+const winPercentage_1 = require("./winPercentage");
+const enums_1 = require("@/types/enums");
+const openings_1 = require("@/data/openings");
+const chess_1 = require("@/lib/chess");
+const getMovesClassification = (rawPositions, uciMoves, fens) => {
+    const positionsWinPercentage = rawPositions.map(winPercentage_1.getPositionWinPercentage);
     let currentOpening = undefined;
     const positions = rawPositions.map((rawPosition, index) => {
         if (index === 0)
             return rawPosition;
         const currentFen = fens[index].split(" ")[0];
-        const opening = openings.find((opening) => opening.fen === currentFen);
+        const opening = openings_1.openings.find((opening) => opening.fen === currentFen);
         if (opening) {
             currentOpening = opening.name;
             return {
                 ...rawPosition,
                 opening: opening.name,
-                moveClassification: MoveClassification.Opening,
+                moveClassification: enums_1.MoveClassification.Opening,
             };
         }
         const prevPosition = rawPositions[index - 1];
@@ -23,13 +26,13 @@ export const getMovesClassification = (rawPositions, uciMoves, fens) => {
             return {
                 ...rawPosition,
                 opening: currentOpening,
-                moveClassification: MoveClassification.Forced,
+                moveClassification: enums_1.MoveClassification.Forced,
             };
         }
         const playedMove = uciMoves[index - 1];
         const lastPositionAlternativeLine = prevPosition.lines.filter((line) => line.pv[0] !== playedMove)?.[0];
         const lastPositionAlternativeLineWinPercentage = lastPositionAlternativeLine
-            ? getLineWinPercentage(lastPositionAlternativeLine)
+            ? (0, winPercentage_1.getLineWinPercentage)(lastPositionAlternativeLine)
             : undefined;
         const bestLinePvToPlay = rawPosition.lines[0].pv;
         const lastPositionWinPercentage = positionsWinPercentage[index - 1];
@@ -39,7 +42,7 @@ export const getMovesClassification = (rawPositions, uciMoves, fens) => {
             return {
                 ...rawPosition,
                 opening: currentOpening,
-                moveClassification: MoveClassification.Splendid,
+                moveClassification: enums_1.MoveClassification.Splendid,
             };
         }
         const fenTwoMovesAgo = index > 1 ? fens[index - 2] : null;
@@ -48,14 +51,14 @@ export const getMovesClassification = (rawPositions, uciMoves, fens) => {
             return {
                 ...rawPosition,
                 opening: currentOpening,
-                moveClassification: MoveClassification.Perfect,
+                moveClassification: enums_1.MoveClassification.Perfect,
             };
         }
         if (playedMove === prevPosition.bestMove) {
             return {
                 ...rawPosition,
                 opening: currentOpening,
-                moveClassification: MoveClassification.Best,
+                moveClassification: enums_1.MoveClassification.Best,
             };
         }
         const moveClassification = getMoveBasicClassification(lastPositionWinPercentage, positionWinPercentage, isWhiteMove);
@@ -67,18 +70,19 @@ export const getMovesClassification = (rawPositions, uciMoves, fens) => {
     });
     return positions;
 };
+exports.getMovesClassification = getMovesClassification;
 const getMoveBasicClassification = (lastPositionWinPercentage, positionWinPercentage, isWhiteMove) => {
     const winPercentageDiff = (positionWinPercentage - lastPositionWinPercentage) *
         (isWhiteMove ? 1 : -1);
     if (winPercentageDiff < -20)
-        return MoveClassification.Blunder;
+        return enums_1.MoveClassification.Blunder;
     if (winPercentageDiff < -10)
-        return MoveClassification.Mistake;
+        return enums_1.MoveClassification.Mistake;
     if (winPercentageDiff < -5)
-        return MoveClassification.Inaccuracy;
+        return enums_1.MoveClassification.Inaccuracy;
     if (winPercentageDiff < -2)
-        return MoveClassification.Okay;
-    return MoveClassification.Excellent;
+        return enums_1.MoveClassification.Okay;
+    return enums_1.MoveClassification.Excellent;
 };
 const isSplendidMove = (lastPositionWinPercentage, positionWinPercentage, isWhiteMove, playedMove, bestLinePvToPlay, fen, lastPositionAlternativeLineWinPercentage) => {
     if (!lastPositionAlternativeLineWinPercentage)
@@ -87,7 +91,7 @@ const isSplendidMove = (lastPositionWinPercentage, positionWinPercentage, isWhit
         (isWhiteMove ? 1 : -1);
     if (winPercentageDiff < -2)
         return false;
-    const isPieceSacrifice = getIsPieceSacrifice(fen, playedMove, bestLinePvToPlay);
+    const isPieceSacrifice = (0, chess_1.getIsPieceSacrifice)(fen, playedMove, bestLinePvToPlay);
     if (!isPieceSacrifice)
         return false;
     if (isLosingOrAlternateCompletelyWinning(positionWinPercentage, lastPositionAlternativeLineWinPercentage, isWhiteMove)) {
@@ -113,7 +117,7 @@ const isPerfectMove = (lastPositionWinPercentage, positionWinPercentage, isWhite
         return false;
     if (fenTwoMovesAgo &&
         uciMoves &&
-        isSimplePieceRecapture(fenTwoMovesAgo, uciMoves))
+        (0, chess_1.isSimplePieceRecapture)(fenTwoMovesAgo, uciMoves))
         return false;
     if (isLosingOrAlternateCompletelyWinning(positionWinPercentage, lastPositionAlternativeLineWinPercentage, isWhiteMove)) {
         return false;
@@ -134,3 +138,4 @@ const getIsTheOnlyGoodMove = (positionWinPercentage, lastPositionAlternativeLine
         (isWhiteMove ? 1 : -1);
     return winPercentageDiff > 10;
 };
+//# sourceMappingURL=moveClassification.js.map

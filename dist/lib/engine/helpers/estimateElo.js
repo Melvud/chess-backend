@@ -1,5 +1,8 @@
-import { ceilsNumber } from "../../../lib/math";
-export const computeEstimatedElo = (positions, whiteElo, blackElo) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.computeEstimatedElo = void 0;
+const math_1 = require("@/lib/math");
+const computeEstimatedElo = (positions, whiteElo, blackElo) => {
     if (positions.length < 2) {
         return undefined;
     }
@@ -8,13 +11,14 @@ export const computeEstimatedElo = (positions, whiteElo, blackElo) => {
     const blackEstimatedElo = getEloFromRatingAndCpl(blackCpl, blackElo ?? whiteElo);
     return { white: whiteEstimatedElo, black: blackEstimatedElo };
 };
+exports.computeEstimatedElo = computeEstimatedElo;
 const getPositionCp = (position) => {
     const line = position.lines[0];
     if (line.cp !== undefined) {
-        return ceilsNumber(line.cp, -1000, 1000);
+        return (0, math_1.ceilsNumber)(line.cp, -1000, 1000);
     }
     if (line.mate !== undefined) {
-        return ceilsNumber(line.mate * Infinity, -1000, 1000);
+        return (0, math_1.ceilsNumber)(line.mate * Infinity, -1000, 1000);
     }
     throw new Error("No cp or mate in line");
 };
@@ -36,7 +40,6 @@ const getPlayersAverageCpl = (positions) => {
         blackCpl: blackCpl / Math.floor((positions.length - 1) / 2),
     };
 };
-// Source: https://lichess.org/forum/general-chess-discussion/how-to-estimate-your-elo-for-a-game-using-acpl-and-what-it-realistically-means
 const getEloFromAverageCpl = (averageCpl) => 3100 * Math.exp(-0.01 * averageCpl);
 const getAverageCplFromElo = (elo) => -100 * Math.log(Math.min(elo, 3100) / 3100);
 const getEloFromRatingAndCpl = (gameCpl, rating) => {
@@ -54,3 +57,4 @@ const getEloFromRatingAndCpl = (gameCpl, rating) => {
         return rating / Math.exp(-0.005 * -cplDiff);
     }
 };
+//# sourceMappingURL=estimateElo.js.map
