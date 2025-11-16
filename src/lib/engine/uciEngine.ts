@@ -112,7 +112,7 @@ export class UciEngine {
   }
 
   /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
-  static async create(engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
+  static async create(_engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
     const eng = new UciEngine();
     eng.ensureBinary();
     return eng;
