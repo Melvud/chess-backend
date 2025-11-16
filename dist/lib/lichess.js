@@ -1,12 +1,15 @@
-import { sortLines } from "./engine/helpers/parseResults";
-import { LichessError, } from "../types/lichess";
-import { formatUciPv } from "./chess";
-import { logErrorToSentry } from "./helpers";
-export const getLichessEval = async (fen, multiPv = 1) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.fetchLichessGame = exports.getLichessUserRecentGames = exports.getLichessEval = void 0;
+const parseResults_1 = require("@/lib/engine/helpers/parseResults");
+const lichess_1 = require("@/types/lichess");
+const chess_1 = require("@/lib/chess");
+const helpers_1 = require("./helpers");
+const getLichessEval = async (fen, multiPv = 1) => {
     try {
         const data = await fetchLichessEval(fen, multiPv);
         if ("error" in data) {
-            if (data.error === LichessError.NotFound) {
+            if (data.error === lichess_1.LichessError.NotFound) {
                 return {
                     bestMove: "",
                     lines: [],
@@ -15,13 +18,13 @@ export const getLichessEval = async (fen, multiPv = 1) => {
             throw new Error(data.error);
         }
         const lines = data.pvs.map((pv, index) => ({
-            pv: formatUciPv(fen, pv.moves.split(" ")),
+            pv: (0, chess_1.formatUciPv)(fen, pv.moves.split(" ")),
             cp: pv.cp,
             mate: pv.mate,
             depth: data.depth,
             multiPv: index + 1,
         }));
-        lines.sort(sortLines);
+        lines.sort(parseResults_1.sortLines);
         const isWhiteToPlay = fen.split(" ")[1] === "w";
         if (!isWhiteToPlay)
             lines.reverse();
@@ -33,14 +36,15 @@ export const getLichessEval = async (fen, multiPv = 1) => {
         };
     }
     catch (error) {
-        logErrorToSentry(error, { fen, multiPv });
+        (0, helpers_1.logErrorToSentry)(error, { fen, multiPv });
         return {
             bestMove: "",
             lines: [],
         };
     }
 };
-export const getLichessUserRecentGames = async (username, signal) => {
+exports.getLichessEval = getLichessEval;
+const getLichessUserRecentGames = async (username, signal) => {
     const res = await fetch(`https://lichess.org/api/games/user/${username}?until=${Date.now()}&max=50&pgnInJson=true&sort=dateDesc&clocks=true`, { method: "GET", headers: { accept: "application/x-ndjson" }, signal });
     if (res.status >= 400) {
         throw new Error("Error fetching games from Lichess");
@@ -52,6 +56,7 @@ export const getLichessUserRecentGames = async (username, signal) => {
         .map((game) => JSON.parse(game));
     return games.map(formatLichessGame);
 };
+exports.getLichessUserRecentGames = getLichessUserRecentGames;
 const fetchLichessEval = async (fen, multiPv) => {
     try {
         const res = await fetch(`https://lichess.org/api/cloud-eval?fen=${fen}&multiPv=${multiPv}`, { method: "GET", signal: AbortSignal.timeout(200) });
@@ -59,10 +64,10 @@ const fetchLichessEval = async (fen, multiPv) => {
     }
     catch (error) {
         console.error(error);
-        return { error: LichessError.NotFound };
+        return { error: lichess_1.LichessError.NotFound };
     }
 };
-export const fetchLichessGame = async (gameId, signal) => {
+const fetchLichessGame = async (gameId, signal) => {
     try {
         const res = await fetch(`https://lichess.org/game/export/${gameId}?pgnInJson=true&clocks=true`, { method: "GET", headers: { accept: "application/x-ndjson" }, signal });
         if (res.status >= 400) {
@@ -76,6 +81,7 @@ export const fetchLichessGame = async (gameId, signal) => {
         return { error: error instanceof Error ? error.message : "Unknown error" };
     }
 };
+exports.fetchLichessGame = fetchLichessGame;
 const formatLichessGame = (data) => {
     return {
         id: data.id,
@@ -104,3 +110,4 @@ const getGameResult = (data) => {
         return data.winner === "white" ? "1-0" : "0-1";
     return "*";
 };
+//# sourceMappingURL=lichess.js.map

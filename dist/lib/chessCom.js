@@ -1,9 +1,12 @@
-import { getPaddedNumber } from "./helpers";
-export const getChessComUserRecentGames = async (username, signal) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getChessComUserAvatar = exports.getChessComUserRecentGames = void 0;
+const helpers_1 = require("./helpers");
+const getChessComUserRecentGames = async (username, signal) => {
     const date = new Date();
     const year = date.getUTCFullYear();
     const month = date.getUTCMonth() + 1;
-    const paddedMonth = getPaddedNumber(month);
+    const paddedMonth = (0, helpers_1.getPaddedNumber)(month);
     const res = await fetch(`https://api.chess.com/pub/player/${username}/games/${year}/${paddedMonth}`, { method: "GET", signal });
     const data = await res.json();
     if (res.status >= 400 &&
@@ -13,7 +16,7 @@ export const getChessComUserRecentGames = async (username, signal) => {
     const games = data?.games ?? [];
     if (games.length < 50) {
         const previousMonth = month === 1 ? 12 : month - 1;
-        const previousPaddedMonth = getPaddedNumber(previousMonth);
+        const previousPaddedMonth = (0, helpers_1.getPaddedNumber)(previousMonth);
         const yearToFetch = previousMonth === 12 ? year - 1 : year;
         const resPreviousMonth = await fetch(`https://api.chess.com/pub/player/${username}/games/${yearToFetch}/${previousPaddedMonth}`);
         const dataPreviousMonth = await resPreviousMonth.json();
@@ -26,13 +29,15 @@ export const getChessComUserRecentGames = async (username, signal) => {
         .map(formatChessComGame);
     return gamesToReturn;
 };
-export const getChessComUserAvatar = async (username) => {
+exports.getChessComUserRecentGames = getChessComUserRecentGames;
+const getChessComUserAvatar = async (username) => {
     const usernameParam = encodeURIComponent(username.trim().toLowerCase());
     const res = await fetch(`https://api.chess.com/pub/player/${usernameParam}`);
     const data = await res.json();
     const avatarUrl = data?.avatar;
     return typeof avatarUrl === "string" ? avatarUrl : null;
 };
+exports.getChessComUserAvatar = getChessComUserAvatar;
 const formatChessComGame = (data) => {
     const result = data.pgn.match(/\[Result "(.*?)"]/)?.[1];
     const movesNb = data.pgn.match(/\d+?\. /g)?.length;
@@ -73,12 +78,13 @@ const getGameTimeControl = (game) => {
         const minutes = Math.floor(timeControl / 60);
         const seconds = timeControl % 60;
         return seconds
-            ? `${minutes}m${getPaddedNumber(seconds)}s${increment}`
+            ? `${minutes}m${(0, helpers_1.getPaddedNumber)(seconds)}s${increment}`
             : `${minutes}m${increment}`;
     }
     const hours = Math.floor(timeControl / 3600);
     const minutes = Math.floor((timeControl % 3600) / 60);
     return minutes
-        ? `${hours}h${getPaddedNumber(minutes)}m${increment}`
+        ? `${hours}h${(0, helpers_1.getPaddedNumber)(minutes)}m${increment}`
         : `${hours}h${increment}`;
 };
+//# sourceMappingURL=chessCom.js.map

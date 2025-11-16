@@ -1,7 +1,16 @@
-// ultraLogger.ts
-import crypto from "node:crypto";
-export function makeReqId() {
-    return crypto.randomBytes(6).toString("hex");
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.makeReqId = makeReqId;
+exports.log = log;
+exports.reqLogMiddleware = reqLogMiddleware;
+exports.withStepLogs = withStepLogs;
+exports.makeProgressLogger = makeProgressLogger;
+const node_crypto_1 = __importDefault(require("node:crypto"));
+function makeReqId() {
+    return node_crypto_1.default.randomBytes(6).toString("hex");
 }
 function now() {
     return Date.now();
@@ -17,19 +26,16 @@ function fmt(obj) {
         return String(obj);
     }
 }
-export function log(level, msg, meta) {
-    // единый формат: время | уровень | сообщение | мета(json)
+function log(level, msg, meta) {
     const line = [
         ts(),
         level.toUpperCase().padEnd(5),
         msg,
         meta ? fmt(meta) : "",
     ].filter(Boolean).join(" | ");
-    // не трогаем существующие консольные выводы — добавляем свои
-    // eslint-disable-next-line no-console
     console[level === "debug" ? "log" : level](line);
 }
-export function reqLogMiddleware() {
+function reqLogMiddleware() {
     return (req, res, next) => {
         const reqId = req.headers["x-request-id"] || makeReqId();
         req.reqId = reqId;
@@ -38,7 +44,6 @@ export function reqLogMiddleware() {
         const _end = res.end;
         const _json = res.json.bind(res);
         const _send = res.send.bind(res);
-        // лог запроса
         log("info", "HTTP IN", {
             reqId,
             method: req.method,
@@ -46,9 +51,7 @@ export function reqLogMiddleware() {
             ip: req.ip,
             ua: req.headers["user-agent"],
             query: req.query,
-            // тело будем логировать аккуратно
         });
-        // перехват res.json / res.send, чтобы знать размер ответа
         res.json = (body) => {
             log("debug", "HTTP OUT json payload", { reqId, size: Buffer.byteLength(JSON.stringify(body) || "") });
             return _json(body);
@@ -77,7 +80,6 @@ export function reqLogMiddleware() {
             });
             return _end.apply(this, args);
         };
-        // собрать тело (вдруг надо)
         req.on("data", (c) => chunks.push(Buffer.from(c)));
         req.on("end", () => {
             if (chunks.length) {
@@ -89,8 +91,7 @@ export function reqLogMiddleware() {
         next();
     };
 }
-/** Обёртка для async-эндпоинтов с вход/выход логами + ловлей ошибок */
-export function withStepLogs(name, fn) {
+function withStepLogs(name, fn) {
     return (async function wrapped(...args) {
         const [req, _res] = args;
         const reqId = (req && req.reqId) || "no-reqid";
@@ -107,8 +108,7 @@ export function withStepLogs(name, fn) {
         }
     });
 }
-/** Хуки для прогресса движка */
-export function makeProgressLogger(scope, reqId, total) {
+function makeProgressLogger(scope, reqId, total) {
     const startedAt = now();
     return {
         onStart(meta) {
@@ -129,3 +129,4 @@ export function makeProgressLogger(scope, reqId, total) {
         },
     };
 }
+//# sourceMappingURL=ultraLogger.js.map

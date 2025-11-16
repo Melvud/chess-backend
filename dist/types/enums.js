@@ -1,10 +1,13 @@
-export var GameOrigin;
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Color = exports.MoveClassification = exports.EngineName = exports.GameOrigin = void 0;
+var GameOrigin;
 (function (GameOrigin) {
     GameOrigin["Pgn"] = "pgn";
     GameOrigin["ChessCom"] = "chesscom";
     GameOrigin["Lichess"] = "lichess";
-})(GameOrigin || (GameOrigin = {}));
-export var EngineName;
+})(GameOrigin || (exports.GameOrigin = GameOrigin = {}));
+var EngineName;
 (function (EngineName) {
     EngineName["Stockfish17"] = "stockfish_17";
     EngineName["Stockfish17Lite"] = "stockfish_17_lite";
@@ -13,8 +16,8 @@ export var EngineName;
     EngineName["Stockfish16NNUE"] = "stockfish_16_nnue";
     EngineName["Stockfish16"] = "stockfish_16";
     EngineName["Stockfish11"] = "stockfish_11";
-})(EngineName || (EngineName = {}));
-export var MoveClassification;
+})(EngineName || (exports.EngineName = EngineName = {}));
+var MoveClassification;
 (function (MoveClassification) {
     MoveClassification["Blunder"] = "blunder";
     MoveClassification["Mistake"] = "mistake";
@@ -26,9 +29,10 @@ export var MoveClassification;
     MoveClassification["Opening"] = "opening";
     MoveClassification["Perfect"] = "perfect";
     MoveClassification["Splendid"] = "splendid";
-})(MoveClassification || (MoveClassification = {}));
-export var Color;
+})(MoveClassification || (exports.MoveClassification = MoveClassification = {}));
+var Color;
 (function (Color) {
     Color["White"] = "w";
     Color["Black"] = "b";
-})(Color || (Color = {}));
+})(Color || (exports.Color = Color = {}));
+//# sourceMappingURL=enums.js.map

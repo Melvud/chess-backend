@@ -1,8 +1,12 @@
-import { ceilsNumber } from "../../../lib/math";
-export const getPositionWinPercentage = (position) => {
-    return getLineWinPercentage(position.lines[0]);
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getLineWinPercentage = exports.getPositionWinPercentage = void 0;
+const math_1 = require("@/lib/math");
+const getPositionWinPercentage = (position) => {
+    return (0, exports.getLineWinPercentage)(position.lines[0]);
 };
-export const getLineWinPercentage = (line) => {
+exports.getPositionWinPercentage = getPositionWinPercentage;
+const getLineWinPercentage = (line) => {
     if (line.cp !== undefined) {
         return getWinPercentageFromCp(line.cp);
     }
@@ -11,13 +15,14 @@ export const getLineWinPercentage = (line) => {
     }
     throw new Error("No cp or mate in line");
 };
+exports.getLineWinPercentage = getLineWinPercentage;
 const getWinPercentageFromMate = (mate) => {
     return mate > 0 ? 100 : 0;
 };
-// Source: https://github.com/lichess-org/lila/blob/a320a93b68dabee862b8093b1b2acdfe132b9966/modules/analyse/src/main/WinPercent.scala#L27
 const getWinPercentageFromCp = (cp) => {
-    const cpCeiled = ceilsNumber(cp, -1000, 1000);
-    const MULTIPLIER = -0.00368208; // Source : https://github.com/lichess-org/lila/pull/11148
+    const cpCeiled = (0, math_1.ceilsNumber)(cp, -1000, 1000);
+    const MULTIPLIER = -0.00368208;
     const winChances = 2 / (1 + Math.exp(MULTIPLIER * cpCeiled)) - 1;
     return 50 + 50 * winChances;
 };
+//# sourceMappingURL=winPercentage.js.map

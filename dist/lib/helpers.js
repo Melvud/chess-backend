@@ -1,25 +1,24 @@
-// src/lib/helpers.ts
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-import fs from "node:fs/promises";
-/**
- * Добавляет ведущий 0 к числу если оно < 10
- */
-export function getPaddedNumber(num) {
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getPaddedNumber = getPaddedNumber;
+exports.resolveEngineWorkerFileUrl = resolveEngineWorkerFileUrl;
+exports.ensureNodeLikeBrowserGlobals = ensureNodeLikeBrowserGlobals;
+exports.logErrorToSentry = logErrorToSentry;
+const node_path_1 = __importDefault(require("node:path"));
+const node_url_1 = require("node:url");
+const promises_1 = __importDefault(require("node:fs/promises"));
+function getPaddedNumber(num) {
     return num < 10 ? `0${num}` : `${num}`;
 }
-/**
- * Преобразует публичный URL в file:// URL
- */
-export function resolveEngineWorkerFileUrl(enginePublicPath) {
+function resolveEngineWorkerFileUrl(enginePublicPath) {
     const rel = enginePublicPath.replace(/^\/+/, "");
-    const fsPath = path.resolve(process.cwd(), "public", rel);
-    return pathToFileURL(fsPath).href;
+    const fsPath = node_path_1.default.resolve(process.cwd(), "public", rel);
+    return (0, node_url_1.pathToFileURL)(fsPath).href;
 }
-/**
- * Настройка глобальных объектов для работы с Stockfish
- */
-export function ensureNodeLikeBrowserGlobals(workerFileUrl) {
+function ensureNodeLikeBrowserGlobals(workerFileUrl) {
     const g = globalThis;
     if (typeof g.window === "undefined")
         g.window = g;
@@ -40,12 +39,10 @@ export function ensureNodeLikeBrowserGlobals(workerFileUrl) {
         g.fetch = async (input, init) => {
             const u = new URL(String(input), g.location?.href ?? "file:///");
             if (u.protocol === "file:") {
-                const buf = await fs.readFile(u);
-                // Исправлено: используем ArrayBuffer вместо Buffer
+                const buf = await promises_1.default.readFile(u);
                 return new Response(buf.buffer, { status: 200 });
             }
-            const { fetch: undiciFetch } = await import("undici");
-            return undiciFetch(u, init);
+            return fetch(u, init);
         };
     }
     else {
@@ -54,8 +51,7 @@ export function ensureNodeLikeBrowserGlobals(workerFileUrl) {
             try {
                 const u = new URL(String(input), g.location?.href ?? "file:///");
                 if (u.protocol === "file:") {
-                    const buf = await fs.readFile(u);
-                    // Исправлено: используем ArrayBuffer вместо Buffer
+                    const buf = await promises_1.default.readFile(u);
                     return new Response(buf.buffer, { status: 200 });
                 }
                 return realFetch(u, init);
@@ -66,11 +62,7 @@ export function ensureNodeLikeBrowserGlobals(workerFileUrl) {
         };
     }
 }
-/**
- * Заглушка для логирования ошибок (можно заменить на Sentry)
- */
-export function logErrorToSentry(error, context) {
+function logErrorToSentry(error, context) {
     console.error("[ERROR]", error, context);
-    // TODO: Интеграция с Sentry
-    // Sentry.captureException(error, { extra: context });
 }
+//# sourceMappingURL=helpers.js.map

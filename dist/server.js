@@ -1,44 +1,44 @@
-// src/server.ts
-// Сервер для анализа шахматных партий с использованием нативного Stockfish.
-// СИНХРОНИЗИРОВАНО с LocalGameAnalyzer.kt
-import "dotenv/config";
-import express from "express";
-import cors from "cors";
-import path from "node:path";
-import os from "node:os";
-import pino from "pino";
-import pinoHttp from "pino-http";
-import { Chess } from "chess.js";
-import { EngineName } from "./types/enums";
-import { computeEstimatedElo } from "./lib/engine/helpers/estimateElo";
-import { getMovesClassification } from "./lib/engine/helpers/moveClassification";
-import { getPositionWinPercentage } from "./lib/engine/helpers/winPercentage";
-import { ceilsNumber, getHarmonicMean, getStandardDeviation, getWeightedMean, } from "./lib/math";
-import { UciEngine } from "./lib/engine/uciEngine";
-// -------------------- ENV --------------------
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const node_path_1 = __importDefault(require("node:path"));
+const node_os_1 = __importDefault(require("node:os"));
+const pino_1 = __importDefault(require("pino"));
+const pino_http_1 = __importDefault(require("pino-http"));
+const chess_js_1 = require("chess.js");
+const enums_1 = require("@/types/enums");
+const estimateElo_1 = require("@/lib/engine/helpers/estimateElo");
+const moveClassification_1 = require("@/lib/engine/helpers/moveClassification");
+const winPercentage_1 = require("@/lib/engine/helpers/winPercentage");
+const math_1 = require("@/lib/math");
+const uciEngine_1 = require("@/lib/engine/uciEngine");
 const PORT = Number(process.env.PORT ?? 8080);
-const ENGINE_NAME = process.env.ENGINE_NAME ?? EngineName.Stockfish17Lite;
+const ENGINE_NAME = process.env.ENGINE_NAME ?? enums_1.EngineName.Stockfish17Lite;
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
 const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
-const CPU_CORES = Math.max(1, os.cpus()?.length ?? 1);
+const CPU_CORES = Math.max(1, node_os_1.default.cpus()?.length ?? 1);
 const ENGINE_THREADS = Math.max(1, Number(process.env.ENGINE_THREADS ?? CPU_CORES));
 const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 256));
 const ENGINE_WORKERS_MAX = Math.max(1, Number(process.env.ENGINE_WORKERS_MAX ?? CPU_CORES));
 const ENGINE_MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? Math.ceil(CPU_CORES / 2)));
-// -------------------- Server --------------------
-const app = express();
-const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
-app.use(cors({
+const app = (0, express_1.default)();
+const log = (0, pino_1.default)({ level: process.env.LOG_LEVEL ?? "info" });
+app.use((0, cors_1.default)({
     origin: (_o, cb) => cb(null, true),
     credentials: true,
 }));
-app.use(express.json({ limit: "10mb" }));
-app.use(pinoHttp({
+app.use(express_1.default.json({ limit: "10mb" }));
+app.use((0, pino_http_1.default)({
     logger: log,
     customProps: () => ({ srv: "chess-backend" }),
 }));
-const publicDir = path.join(process.cwd(), "public");
-app.use("/engines", express.static(path.join(publicDir, "engines")));
+const publicDir = node_path_1.default.join(process.cwd(), "public");
+app.use("/engines", express_1.default.static(node_path_1.default.join(publicDir, "engines")));
 const PROGRESS = new Map();
 function initProgress(id, total) {
     const now = Date.now();
@@ -98,7 +98,7 @@ function normalizePlayersRatings(src) {
 }
 let singletonEngine = null;
 async function createEngineInstance(opts) {
-    const eng = await UciEngine.create(ENGINE_NAME, "");
+    const eng = await uciEngine_1.UciEngine.create(ENGINE_NAME, "");
     try {
         const threads = Math.max(1, Math.floor(opts?.threads ?? ENGINE_THREADS));
         const hashMb = Math.max(16, Math.floor(opts?.hashMb ?? ENGINE_HASH_MB));
@@ -123,7 +123,6 @@ async function getSingletonEngine() {
     });
     return singletonEngine;
 }
-// -------------------- Async queue --------------------
 class AsyncQueue {
     concurrency;
     running = 0;
@@ -153,7 +152,6 @@ class AsyncQueue {
     }
 }
 const jobQueue = new AsyncQueue(ENGINE_MAX_CONCURRENT_JOBS);
-// -------------------- Parallel evaluation --------------------
 async function evaluateGameParallel(baseParams, workersRequested, onProgress) {
     const fens = baseParams.fens ?? [];
     const total = fens.length;
@@ -213,26 +211,17 @@ async function evaluateGameParallel(baseParams, workersRequested, onProgress) {
     const settings = first?.settings ?? {};
     return { positions: positionsMerged, settings };
 }
-// -------------------- Analysis helpers (matching LocalGameAnalyzer.kt) --------------------
-/**
- * Вычисление CP из позиции (как в LocalGameAnalyzer.kt)
- */
 function getPositionCp(position) {
     const line = position.lines[0];
     if (line.cp !== undefined) {
-        return ceilsNumber(line.cp, -1000, 1000);
+        return (0, math_1.ceilsNumber)(line.cp, -1000, 1000);
     }
     if (line.mate !== undefined) {
-        return ceilsNumber(line.mate * 1000, -1000, 1000);
+        return (0, math_1.ceilsNumber)(line.mate * 1000, -1000, 1000);
     }
     return 0;
 }
-/**
- * Вычисление ACPL (Average Centipawn Loss)
- * Синхронизировано с LocalGameAnalyzer.kt: analyzeGame()
- */
 function computeACPL(positions) {
-    // Разделяем позиции на белые и черные
     const whitePositions = [];
     const blackPositions = [];
     positions.forEach((pos, idx) => {
@@ -243,7 +232,6 @@ function computeACPL(positions) {
             blackPositions.push(pos);
         }
     });
-    // Вычисляем CPL для белых
     const whiteCplValues = [];
     for (let i = 0; i < whitePositions.length - 1; i++) {
         const currentCp = getPositionCp(whitePositions[i]);
@@ -251,7 +239,6 @@ function computeACPL(positions) {
         const loss = Math.max(0, currentCp - nextCp);
         whiteCplValues.push(Math.min(loss, 1000));
     }
-    // Вычисляем CPL для черных
     const blackCplValues = [];
     for (let i = 0; i < blackPositions.length - 1; i++) {
         const currentCp = getPositionCp(blackPositions[i]);
@@ -270,19 +257,11 @@ function computeACPL(positions) {
         black: Math.round(blackCpl),
     };
 }
-/**
- * Вычисление точности хода из разницы win%
- * Синхронизировано с accuracy.ts: getMovesAccuracy()
- */
 function rawMoveAccuracy(winDiff) {
-    // Source: https://github.com/lichess-org/lila/blob/a320a93b68dabee862b8093b1b2acdfe132b9966/modules/analyse/src/main/AccuracyPercent.scala#L44
     const raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * winDiff) -
         3.166924740191411;
     return Math.min(100, Math.max(0, raw + 1));
 }
-/**
- * Получение точности всех ходов
- */
 function getMovesAccuracy(winPercents) {
     return winPercents.slice(1).map((winPercent, index) => {
         const lastWinPercent = winPercents[index];
@@ -293,12 +272,8 @@ function getMovesAccuracy(winPercents) {
         return rawMoveAccuracy(winDiff);
     });
 }
-/**
- * Вычисление весов для точности
- * Синхронизировано с accuracy.ts: getAccuracyWeights()
- */
 function getAccuracyWeights(winPercents) {
-    const windowSize = ceilsNumber(Math.ceil(winPercents.length / 10), 2, 8);
+    const windowSize = (0, math_1.ceilsNumber)(Math.ceil(winPercents.length / 10), 2, 8);
     const windows = [];
     const halfWindowSize = Math.round(windowSize / 2);
     for (let i = 1; i < winPercents.length; i++) {
@@ -315,31 +290,22 @@ function getAccuracyWeights(winPercents) {
         windows.push(winPercents.slice(startIdx, endIdx));
     }
     return windows.map((window) => {
-        const std = getStandardDeviation(window);
-        return ceilsNumber(std, 0.5, 12);
+        const std = (0, math_1.getStandardDeviation)(window);
+        return (0, math_1.ceilsNumber)(std, 0.5, 12);
     });
 }
-/**
- * Вычисление точности игрока
- * Синхронизировано с LocalGameAnalyzer.kt: getPlayerAccuracy()
- * Возвращает ТОЛЬКО итоговое число (среднее взвешенной и гармонической средней)
- */
 function getPlayerAccuracy(movesAcc, weights, player) {
     const remainder = player === "white" ? 0 : 1;
     const playerAcc = movesAcc.filter((_, idx) => idx % 2 === remainder);
     const playerWeights = weights.filter((_, idx) => idx % 2 === remainder);
     if (playerAcc.length === 0)
         return 0;
-    const weighted = getWeightedMean(playerAcc, playerWeights);
-    const harmonic = getHarmonicMean(playerAcc);
+    const weighted = (0, math_1.getWeightedMean)(playerAcc, playerWeights);
+    const harmonic = (0, math_1.getHarmonicMean)(playerAcc);
     return (weighted + harmonic) / 2;
 }
-/**
- * Вычисление общей точности
- * Синхронизировано с LocalGameAnalyzer.kt: computeAccuracy()
- */
 function computeAccuracy(positions) {
-    const positionsWinPercentage = positions.map(p => getPositionWinPercentage(p));
+    const positionsWinPercentage = positions.map(p => (0, winPercentage_1.getPositionWinPercentage)(p));
     const weights = getAccuracyWeights(positionsWinPercentage);
     const movesAccuracy = getMovesAccuracy(positionsWinPercentage);
     const whiteAccuracy = getPlayerAccuracy(movesAccuracy, weights, "white");
@@ -349,9 +315,6 @@ function computeAccuracy(positions) {
         black: blackAccuracy,
     };
 }
-/**
- * Конвертация MoveClassification в строку верхнего регистра
- */
 function toClientMoveClass(cls) {
     const v = typeof cls === "string" ? cls : cls?.toString?.() ?? "";
     switch (v.toLowerCase()) {
@@ -380,19 +343,12 @@ function toClientMoveClass(cls) {
             return "OKAY";
     }
 }
-/**
- * Нормализация UCI для сравнения (добавляет 'q' к промоции по умолчанию)
- */
 function normUci(u) {
     const s = String(u || "").trim().toLowerCase();
     if (s.length === 4)
         return s + "q";
     return s;
 }
-/**
- * Конвертация позиции в клиентский формат
- * Синхронизировано с LocalGameAnalyzer.kt: toClientPosition()
- */
 function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
     const rawLines = Array.isArray(posAny?.lines) ? posAny.lines : [];
     const lines = rawLines.map((l) => {
@@ -405,7 +361,6 @@ function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
         const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
         return { pv, cp: cpVal, mate: mateVal };
     });
-    // Fallback для пустых линий
     if (lines.length === 0) {
         if (isLastPosition && gameResult && (gameResult === "1-0" || gameResult === "0-1")) {
             const mate = gameResult === "1-0" ? +1 : -1;
@@ -415,7 +370,6 @@ function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
             lines.push({ pv: [], cp: 0, best: "" });
         }
     }
-    // Устанавливаем best для первой линии
     const firstPv = lines[0]?.pv;
     const best = posAny?.bestMove ??
         (Array.isArray(firstPv) && firstPv.length > 0 ? firstPv[0] : undefined) ??
@@ -429,13 +383,8 @@ function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
         lines,
     };
 }
-/**
- * Создание отчета по ходу
- * Синхронизировано с LocalGameAnalyzer.kt: MoveReport
- */
 function createMoveReport(uci, beforeFen, afterFen, winBefore, winAfter, moveAccuracy, classification, bestFromPosition) {
-    // Преобразуем UCI в SAN
-    const chess = new Chess(beforeFen);
+    const chess = new chess_js_1.Chess(beforeFen);
     const move = {
         from: uci.slice(0, 2),
         to: uci.slice(2, 4),
@@ -444,7 +393,6 @@ function createMoveReport(uci, beforeFen, afterFen, winBefore, winAfter, moveAcc
     const m = chess.move(move);
     const san = m?.san ?? uci;
     let cls = toClientMoveClass(classification);
-    // Принудительный BEST, если сыгранный ход совпал с лучшим
     if (bestFromPosition) {
         const playedUci = normUci(uci);
         const bestUci = normUci(bestFromPosition);
@@ -464,29 +412,20 @@ function createMoveReport(uci, beforeFen, afterFen, winBefore, winAfter, moveAcc
         tags: [],
     };
 }
-/**
- * Анализ игры - главная функция
- * Синхронизировано с LocalGameAnalyzer.kt: analyzeGame()
- */
 function analyzeGame(args) {
     const { engineOut, fens, uciMoves, depth, multiPv, gameResult } = args;
-    // 1. Конвертируем позиции в клиентский формат
     const positions = fens.map((fen, idx) => {
         const posAny = engineOut.positions[idx] ?? {};
         const isLast = idx === fens.length - 1;
         return toClientPosition(posAny, fen, idx, isLast, gameResult);
     });
-    // 2. Вычисляем win% для всех позиций
     const winPercents = positions.map((p) => {
         const first = p?.lines?.[0];
         const hasEval = first && (typeof first.cp === "number" || typeof first.mate === "number");
-        return hasEval ? getPositionWinPercentage(p) : 50;
+        return hasEval ? (0, winPercentage_1.getPositionWinPercentage)(p) : 50;
     });
-    // 3. Вычисляем точность всех ходов
     const movesAccuracy = getMovesAccuracy(winPercents);
-    // 4. Классифицируем ходы
-    const classifiedPositions = getMovesClassification(positions, uciMoves, fens);
-    // 5. Создаем отчеты по ходам
+    const classifiedPositions = (0, moveClassification_1.getMovesClassification)(positions, uciMoves, fens);
     const moves = [];
     const count = Math.min(uciMoves.length, Math.max(0, fens.length - 1));
     for (let i = 0; i < count; i++) {
@@ -501,12 +440,9 @@ function analyzeGame(args) {
         const moveReport = createMoveReport(uci, beforeFen, afterFen, winBefore, winAfter, moveAcc, classification, bestFromPosition);
         moves.push(moveReport);
     }
-    // 6. Вычисляем общую точность
     const accuracy = computeAccuracy(positions);
-    // 7. Вычисляем ACPL
     const acpl = computeACPL(positions);
-    // 8. Вычисляем оценочный рейтинг
-    const estRaw = computeEstimatedElo(positions, undefined, undefined);
+    const estRaw = (0, estimateElo_1.computeEstimatedElo)(positions, undefined, undefined);
     const toIntOrNull = (v) => {
         const n = Number(v);
         return Number.isFinite(n) ? Math.round(n) : null;
@@ -517,13 +453,11 @@ function analyzeGame(args) {
             black: toIntOrNull(estRaw?.black),
         }
         : null;
-    // 9. Формируем настройки
     const settings = {
         engine: engineOut?.settings?.engine ?? "stockfish-native",
         depth: engineOut?.settings?.depth ?? depth,
         multiPv: engineOut?.settings?.multiPv ?? multiPv,
     };
-    // 10. Возвращаем полный анализ
     return {
         positions,
         moves,
@@ -533,7 +467,6 @@ function analyzeGame(args) {
         settings,
     };
 }
-// -------------------- PGN parsing --------------------
 function normalizePgnServer(src) {
     let s = src
         .replace(/\uFEFF/g, "")
@@ -613,7 +546,7 @@ function pgnToFenAndUci(pgn) {
     const pgnFixed = normalizePgnServer(pgn);
     const { headerText, movetext } = splitHeaderAndMovetext(pgnFixed);
     const header = parseHeaderMap(headerText);
-    const replay = new Chess();
+    const replay = new chess_js_1.Chess();
     if (header?.FEN && (header?.SetUp === "1" || header?.SetUp === "true")) {
         try {
             replay.load(header.FEN);
@@ -640,7 +573,6 @@ function pgnToFenAndUci(pgn) {
     }
     return { fens, uciMoves, header };
 }
-// -------------------- Endpoints --------------------
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/ping", (_req, res) => res.json({ ok: true }));
 app.post("/ping", (_req, res) => res.json({ ok: true }));
@@ -662,9 +594,6 @@ app.get("/api/v1/progress/:id", (req, res) => {
     }
     res.json(p);
 });
-/**
- * Оценка одной позиции или одного хода (real-time)
- */
 app.post("/api/v1/evaluate/position", async (req, res) => {
     try {
         const { fen, depth, multiPv, useNNUE, elo, skillLevel, beforeFen, afterFen, uciMove, } = req.body ?? {};
@@ -672,7 +601,6 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         const effMultiPv = Number.isFinite(multiPv)
             ? Number(multiPv)
             : DEFAULT_MULTIPV;
-        // === РЕЖИМ real-time: анализ ОДНОГО хода ===
         if (typeof beforeFen === "string" &&
             typeof afterFen === "string" &&
             typeof uciMove === "string") {
@@ -694,9 +622,8 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
                 const posAny = rawPositions[idx] ?? {};
                 return toClientPosition(posAny, fenStr, idx, idx === 1);
             });
-            // Проверка на мат
             try {
-                const ch = new Chess();
+                const ch = new chess_js_1.Chess();
                 ch.load(String(beforeFen));
                 const from = String(uciMove).slice(0, 2);
                 const to = String(uciMove).slice(2, 4);
@@ -718,7 +645,6 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
                 }
             }
             catch { }
-            // Если нет best для позиции "до" - запрашиваем
             const needBestFix = !positions[0]?.lines?.[0]?.best ||
                 String(positions[0].lines[0].best).trim() === "";
             if (needBestFix) {
@@ -748,8 +674,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             const bestFromBefore = String(positions[0]?.lines?.[0]?.best ??
                 positions[0]?.lines?.[0]?.pv?.[0] ??
                 "") || undefined;
-            // Классификация
-            const classified = getMovesClassification(positions, [String(uciMove)], [String(beforeFen), String(afterFen)]);
+            const classified = (0, moveClassification_1.getMovesClassification)(positions, [String(uciMove)], [String(beforeFen), String(afterFen)]);
             const clsRaw = classified?.[1]?.moveClassification;
             const cls = toClientMoveClass(clsRaw);
             return res.json({
@@ -758,7 +683,6 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
                 moveClassification: cls,
             });
         }
-        // === РЕЖИМ обычной позиции ===
         if (!fen || typeof fen !== "string") {
             return res.status(400).json({ error: "fen_required" });
         }
@@ -772,18 +696,15 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             ...(skillLevel !== undefined ? { skillLevel } : {}),
         };
         const finalEval = await engine.evaluatePositionWithUpdate(params);
-        res.json(finalEval);
+        return res.json(finalEval);
     }
     catch (e) {
-        res.status(500).json({
+        return res.status(500).json({
             error: "evaluate_position_failed",
             details: String(e?.message ?? e),
         });
     }
 });
-/**
- * Оценка игры по FEN-ам
- */
 app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
     const progressId = String(req.query?.progressId ?? req.body?.progressId ?? "");
     try {
@@ -848,20 +769,17 @@ app.post("/api/v1/evaluate/game/by-fens", async (req, res) => {
                 setProgress(progressId, { stage: "done", done: fens.length });
             return analysis;
         });
-        res.json(result);
+        return res.json(result);
     }
     catch (e) {
         if (progressId)
             setProgress(progressId, { stage: "done" });
-        res.status(500).json({
+        return res.status(500).json({
             error: "evaluate_game_failed",
             details: String(e?.message ?? e),
         });
     }
 });
-/**
- * Оценка игры по PGN
- */
 app.post("/api/v1/evaluate/game", async (req, res) => {
     const progressId = String(req.query?.progressId ?? req.body?.progressId ?? "");
     try {
@@ -915,12 +833,12 @@ app.post("/api/v1/evaluate/game", async (req, res) => {
                 setProgress(progressId, { stage: "done", done: fens.length });
             return analysis;
         });
-        res.json(result);
+        return res.json(result);
     }
     catch (e) {
         if (progressId)
             setProgress(progressId, { stage: "done" });
-        res.status(500).json({
+        return res.status(500).json({
             error: "evaluate_game_failed",
             details: String(e?.message ?? e),
         });
@@ -934,3 +852,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
     log.info(`Server http://localhost:${PORT}`);
 });
+//# sourceMappingURL=server.js.map

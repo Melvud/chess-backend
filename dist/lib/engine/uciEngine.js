@@ -1,16 +1,47 @@
-// src/lib/engine/uciEngine.ts
-// Реализует UCI-движок через нативный бинарник Stockfish.
-// В отличие от браузерной версии Chesskit, здесь нет Web Worker,
-// поэтому мы напрямую читаем stdout процесса, накапливаем сообщения
-// и затем используем parseEvaluationResults для разбора оценок и bestmove.
-import { spawn } from "node:child_process";
-import * as path from "node:path";
-import * as fs from "node:fs";
-import os from "node:os";
-// Импортируем парсер результатов из Chesskit
-import { parseEvaluationResults } from "../../lib/engine/helpers/parseResults";
-// Парсим строку info для обновления прогресса. В отличие от Chesskit,
-// используем только для прогресса, а сами результаты парсятся через parseResults.
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.UciEngine = void 0;
+const node_child_process_1 = require("node:child_process");
+const path = __importStar(require("node:path"));
+const fs = __importStar(require("node:fs"));
+const node_os_1 = __importDefault(require("node:os"));
+const parseResults_1 = require("@/lib/engine/helpers/parseResults");
 function parseInfoLineForProgress(s) {
     const get = (key) => {
         const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
@@ -32,7 +63,6 @@ function parseInfoLineForProgress(s) {
         line.cp = cp;
     return line;
 }
-// Асинхронно ждём появления bestmove в stdout движка и резолвим промис.
 function waitForBestmove(proc) {
     return new Promise((resolve) => {
         const handler = (chunk) => {
@@ -45,9 +75,6 @@ function waitForBestmove(proc) {
         proc.stdout.on("data", handler);
     });
 }
-// ────────────────────────────────────────────────────────────────────
-// Значения по умолчанию для настроек движка
-// ────────────────────────────────────────────────────────────────────
 const ENGINE_PATH_ENV = process.env.STOCKFISH_PATH || process.env.STOCKFISH_BIN || "./bin/stockfish";
 const ENGINE_PATH = resolveEnginePath(ENGINE_PATH_ENV);
 const DEFAULT_DEPTH = Number.isFinite(Number(process.env.ENGINE_DEPTH))
@@ -56,18 +83,13 @@ const DEFAULT_DEPTH = Number.isFinite(Number(process.env.ENGINE_DEPTH))
 const DEFAULT_MULTIPV = Number.isFinite(Number(process.env.ENGINE_MULTIPV))
     ? Number(process.env.ENGINE_MULTIPV)
     : 3;
-// по умолчанию стараемся занять все ядра (оставлять ядро системе можно с -1, но тут оставим как есть)
-const CPU_COUNT = Math.max(1, os.cpus()?.length ?? 1);
+const CPU_COUNT = Math.max(1, node_os_1.default.cpus()?.length ?? 1);
 const DEFAULT_THREADS = Math.max(1, CPU_COUNT);
 const DEFAULT_HASH_MB = Number.isFinite(Number(process.env.ENGINE_HASH_MB))
     ? Number(process.env.ENGINE_HASH_MB)
     : 256;
-// «настоящий» уровень навыка Stockfish
 const SKILL_LEVEL_MIN = 0;
 const SKILL_LEVEL_MAX = 20;
-// ────────────────────────────────────────────────────────────────────
-// Вспомогательное: резолв бинарника под win/*nix
-// ────────────────────────────────────────────────────────────────────
 function resolveEnginePath(p) {
     let bin = path.resolve(p);
     if (process.platform === "win32" && !bin.toLowerCase().endsWith(".exe")) {
@@ -77,19 +99,15 @@ function resolveEnginePath(p) {
     }
     return bin;
 }
-export class UciEngine {
-    engineName;
+class UciEngine {
     currentProc = null;
-    constructor(engineName) {
-        this.engineName = engineName;
+    constructor() {
     }
-    /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
-    static async create(engineName, _enginePublicPath) {
-        const eng = new UciEngine(engineName);
+    static async create(_engineName, _enginePublicPath) {
+        const eng = new UciEngine();
         eng.ensureBinary();
         return eng;
     }
-    /** Проверяем наличие и исполняемость бинарника Stockfish */
     ensureBinary() {
         const bin = ENGINE_PATH;
         if (!fs.existsSync(bin)) {
@@ -99,28 +117,22 @@ export class UciEngine {
             fs.accessSync(bin, fs.constants.X_OK);
         }
         catch {
-            // На некоторых FS X_OK может «падать», но бинарь запускается; оставляем мягко.
         }
     }
-    /** Запускаем новый процесс Stockfish и запоминаем текущий */
     spawnEngine() {
         const bin = ENGINE_PATH;
-        const proc = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
+        const proc = (0, node_child_process_1.spawn)(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
         this.currentProc = proc;
         proc.on("exit", () => {
             if (this.currentProc === proc)
                 this.currentProc = null;
         });
-        // лишний stderr не сыпем в логи
         proc.stderr.on("data", () => { });
         return proc;
     }
-    /** Отправляем команду в stdin движка */
     send(proc, cmd) {
         proc.stdin.write(cmd + "\n");
     }
-    // ---------- ВНУТРЕННИЕ ПОМОЩНИКИ ДЛЯ СЕССИИ ОДНОГО ПРОЦЕССА ----------
-    /** Инициализация процесса и общих опций (вызывается один раз на сессию) */
     async initSession(proc, opts) {
         const threads = Math.max(1, Number.isFinite(opts.threads) ? Number(opts.threads) : DEFAULT_THREADS);
         const hashMb = Math.max(16, Number.isFinite(opts.hashMb) ? Number(opts.hashMb) : DEFAULT_HASH_MB);
@@ -136,25 +148,20 @@ export class UciEngine {
         if (opts.syzygyPath)
             this.send(proc, `setoption name SyzygyPath value ${opts.syzygyPath}`);
         if (typeof useNNUE === "boolean") {
-            // у разных сборок название опции NNUE отличается; самая совместимая — Use NNUE
             this.send(proc, `setoption name Use NNUE value ${useNNUE ? "true" : "false"}`);
         }
-        // Приоритет: skillLevel (0..20) — это «нативный» уровень Stockfish.
         if (typeof skill === "number") {
-            // Если используем Skill Level, не ограничиваем по UCI_Elo
             this.send(proc, `setoption name UCI_LimitStrength value false`);
             this.send(proc, `setoption name Skill Level value ${skill}`);
         }
         else if (hasElo) {
-            // Иначе — ограничиваем по UCI_Elo (старое поведение)
             this.send(proc, `setoption name UCI_LimitStrength value true`);
             this.send(proc, `setoption name UCI_Elo value ${elo}`);
         }
         this.send(proc, "isready");
-        this.send(proc, "ucinewgame"); // старт новой партии
+        this.send(proc, "ucinewgame");
     }
-    /** Оценка одной позиции в рамках уже инициализированной сессии */
-    async evaluateFenOnSession(proc, fen, depth, multiPv, onDepth) {
+    async evaluateFenOnSession(proc, fen, depth, onDepth) {
         const lines = [];
         let lastReportDepth = 0;
         const onStdout = (chunk) => {
@@ -175,21 +182,13 @@ export class UciEngine {
             }
         };
         proc.stdout.on("data", onStdout);
-        // Устанавливаем позицию и запускаем поиск
         this.send(proc, `position fen ${fen}`);
         this.send(proc, `go depth ${depth}`);
-        // ждём bestmove — конец поиска по этой позиции
         await waitForBestmove(proc);
-        // снимаем обработчик и парсим накопленное
         proc.stdout.off("data", onStdout);
-        const parsed = parseEvaluationResults(lines, fen);
+        const parsed = (0, parseResults_1.parseEvaluationResults)(lines, fen);
         return parsed;
     }
-    // ------------------- ПУБЛИЧНЫЕ МЕТОДЫ -------------------
-    /**
-     * Оценивает текущую позицию с поддержкой MultiPV. Возвращает объект PositionEval.
-     * Для единичных вызовов — отдельный процесс (изолированная, «короткоживущая» сессия).
-     */
     async evaluatePositionWithUpdate(params, onProgress) {
         const { fen } = params;
         const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
@@ -201,7 +200,6 @@ export class UciEngine {
         const elo = Number(params.elo);
         const skillLevel = clampToSkill(params.skillLevel);
         const proc = this.spawnEngine();
-        // Сбор stdout и прогресс
         const results = [];
         let lastDepthReported = 0;
         const onStdout = (chunk) => {
@@ -225,14 +223,10 @@ export class UciEngine {
             }
         };
         proc.stdout.on("data", onStdout);
-        // Настройка движка (skillLevel имеет приоритет над elo)
         await this.initSession(proc, { threads, hashMb, multiPv, syzygyPath, useNNUE, elo, skillLevel });
-        // Новый поиск — отдельная позиция
         this.send(proc, `position fen ${fen}`);
         this.send(proc, `go depth ${depth}`);
-        // Ждём появления bestmove
         await waitForBestmove(proc);
-        // Завершаем работу движка
         try {
             this.send(proc, "quit");
             proc.stdin.end();
@@ -243,18 +237,13 @@ export class UciEngine {
         }
         catch { } }, 150);
         proc.stdout.off("data", onStdout);
-        // Разбираем результаты
-        const parsed = parseEvaluationResults(results, fen);
+        const parsed = (0, parseResults_1.parseEvaluationResults)(results, fen);
         return parsed;
     }
-    /**
-     * Оценка списка FEN — в рамках **одного процесса** (теплый кэш TT).
-     */
     async evaluateGame(params, onProgress) {
         const fens = Array.isArray(params.fens) ? params.fens : [];
         const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
         const multiPv = Number.isFinite(params.multiPv) ? Number(params.multiPv) : DEFAULT_MULTIPV;
-        // Старт одной «сессии» движка на всю партию
         const proc = this.spawnEngine();
         await this.initSession(proc, {
             threads: params?.threads ?? DEFAULT_THREADS,
@@ -269,8 +258,7 @@ export class UciEngine {
         const total = fens.length;
         for (let i = 0; i < total; i++) {
             const fen = String(fens[i] ?? "");
-            // Внутри сессии не зовём ucinewgame (сохраняем TT)
-            const pe = await this.evaluateFenOnSession(proc, fen, depth, multiPv, undefined);
+            const pe = await this.evaluateFenOnSession(proc, fen, depth, undefined);
             positions.push(pe);
             if (onProgress) {
                 const pct = Math.round(((i + 1) / Math.max(1, total)) * 100);
@@ -280,7 +268,6 @@ export class UciEngine {
                 catch { }
             }
         }
-        // Закрываем процесс после окончания партии
         try {
             this.send(proc, "quit");
             proc.stdin.end();
@@ -301,14 +288,12 @@ export class UciEngine {
         };
         return out;
     }
-    /** Получить лучший ход для данной позиции. */
     async getEngineNextMove(fen, _elo, depth) {
         const d = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
         const res = await this.evaluatePositionWithUpdate({ fen, depth: d, multiPv: 1 });
         const best = String(res.bestMove ?? res.lines?.[0]?.pv?.[0] ?? "");
         return best;
     }
-    /** Остановить текущие задачи (stop), если процесс активен */
     async stopAllCurrentJobs() {
         const p = this.currentProc;
         if (!p)
@@ -323,7 +308,6 @@ export class UciEngine {
         catch { } }, 100);
         this.currentProc = null;
     }
-    /** Полностью завершить работу движка */
     shutdown() {
         const p = this.currentProc;
         if (p) {
@@ -339,9 +323,7 @@ export class UciEngine {
         }
     }
 }
-// ────────────────────────────────────────────────────────────────────
-// Внутренние утилиты
-// ────────────────────────────────────────────────────────────────────
+exports.UciEngine = UciEngine;
 function clampToSkill(v) {
     if (v === null || v === undefined)
         return undefined;
@@ -351,3 +333,4 @@ function clampToSkill(v) {
     const clamped = Math.max(SKILL_LEVEL_MIN, Math.min(SKILL_LEVEL_MAX, Math.round(n)));
     return clamped;
 }
+//# sourceMappingURL=uciEngine.js.map
