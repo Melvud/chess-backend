@@ -44,10 +44,15 @@ RUN wget https://github.com/official-stockfish/Stockfish/releases/download/sf_17
 # ============================================
 FROM node:18-slim
 
-# Установка зависимостей для Stockfish
+# Установка зависимостей для Stockfish Ubuntu binary
+# Stockfish требует glibc и стандартные C++ библиотеки
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     file \
+    coreutils \
+    libc6 \
+    libstdc++6 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -69,6 +74,11 @@ COPY --from=stockfish-downloader --chmod=755 /stockfish/stockfish ./bin/stockfis
 
 # Проверяем, что файл существует и имеет права
 RUN ls -la ./bin/stockfish && file ./bin/stockfish
+
+# Тестируем запуск Stockfish (должен вывести "Stockfish 17 by...")
+RUN echo "Testing Stockfish execution..." && \
+    timeout 5s ./bin/stockfish <<< "quit" || \
+    (echo "ERROR: Failed to execute Stockfish!" && exit 1)
 
 # Копируем и настраиваем entrypoint скрипт
 COPY docker-entrypoint.sh /usr/local/bin/
