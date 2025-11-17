@@ -10,8 +10,8 @@ const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
 const pino_1 = __importDefault(require("pino"));
 const pino_http_1 = __importDefault(require("pino-http"));
-const enums_1 = require("@/types/enums");
-const uciEngine_1 = require("@/lib/engine/uciEngine");
+const enums_1 = require("./types/enums");
+const uciEngine_1 = require("./lib/engine/uciEngine");
 const PORT = Number(process.env.PORT ?? 8080);
 const ENGINE_NAME = process.env.ENGINE_NAME ?? enums_1.EngineName.Stockfish17Lite;
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
@@ -181,14 +181,6 @@ async function evaluateGameParallel(baseParams, workersRequested, progressId, on
             }
         };
         const out = await eng.evaluateGame({ ...baseParams, fens: shardFens, uciMoves: shardUci }, onShardProgress);
-        try {
-            if (typeof eng.shutdown === "function") {
-                eng.shutdown();
-            }
-        }
-        catch (e) {
-            log.warn({ err: e, worker: wi }, "Worker shutdown error");
-        }
         const positionsWithIdx = out.positions.map((pos, k) => ({
             __idx: idxs[k],
             ...pos,
@@ -196,6 +188,22 @@ async function evaluateGameParallel(baseParams, workersRequested, progressId, on
         return { ...out, positions: positionsWithIdx };
     });
     const shards = await Promise.all(tasks);
+    await Promise.allSettled(tasks.map(async (_, wi) => {
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                try {
+                    const worker = shards[wi]?.__engine;
+                    if (worker && typeof worker.shutdown === "function") {
+                        worker.shutdown();
+                    }
+                }
+                catch (e) {
+                    log.warn({ err: String(e), worker: wi }, "Worker shutdown warning");
+                }
+                resolve();
+            }, 50);
+        });
+    }));
     const positionsMerged = new Array(total);
     for (const s of shards)
         for (const p of s.positions) {
@@ -351,12 +359,41 @@ app.use((req, res) => {
         .status(404)
         .json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
 });
+(async () => {
+    try {
+        log.info("🔥 Warming up engine...");
+        const warmupEngine = await createEngineInstance({
+            threads: ENGINE_THREADS,
+            hashMb: ENGINE_HASH_MB,
+            multiPv: 1,
+        });
+        await warmupEngine.evaluatePositionWithUpdate({
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            depth: 10,
+            multiPv: 1,
+        });
+        log.info("✅ Engine warmed up and ready");
+        singletonEngine = warmupEngine;
+    }
+    catch (e) {
+        log.warn({ err: e }, "⚠️  Engine warmup failed, will initialize on first request");
+    }
+})();
 app.listen(PORT, () => {
     log.info({
         port: PORT,
         threads: ENGINE_THREADS,
         hashMB: ENGINE_HASH_MB,
         maxWorkers: ENGINE_WORKERS_MAX
-    }, "Server started");
+    }, "🚀 Server started");
 });
+if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
+    const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
+    setInterval(() => {
+        fetch(`http://localhost:${PORT}/health`)
+            .then(() => log.debug("Keep-alive ping successful"))
+            .catch((e) => log.warn({ err: String(e) }, "Keep-alive ping failed"));
+    }, KEEP_ALIVE_INTERVAL);
+    log.info("💚 Keep-alive enabled (Railway optimization)");
+}
 //# sourceMappingURL=server.js.map

@@ -41,7 +41,7 @@ const node_child_process_1 = require("node:child_process");
 const path = __importStar(require("node:path"));
 const fs = __importStar(require("node:fs"));
 const node_os_1 = __importDefault(require("node:os"));
-const parseResults_1 = require("@/lib/engine/helpers/parseResults");
+const parseResults_1 = require("../engine/helpers/parseResults");
 function parseInfoLineForProgress(s) {
     const get = (key) => {
         const re = new RegExp(`(?:^| )${key}\\s+(-?\\d+)`);
@@ -268,7 +268,7 @@ class UciEngine {
         const total = fens.length;
         for (let i = 0; i < total; i++) {
             const fen = String(fens[i] ?? "");
-            const pe = await this.evaluateFenOnSession(proc, fen, depth, (d, depthPct) => {
+            const pe = await this.evaluateFenOnSession(proc, fen, depth, (_d, depthPct) => {
                 if (onProgress) {
                     const posProgress = (i / total) * 100;
                     const depthContribution = (depthPct / total);
@@ -332,13 +332,24 @@ class UciEngine {
         const p = this.currentProc;
         if (p) {
             try {
-                p.stdin.end("quit\n");
+                if (!p.killed && p.stdin && p.stdin.writable) {
+                    p.stdin.write("quit\n");
+                    p.stdin.end();
+                }
             }
-            catch { }
+            catch (e) {
+            }
             try {
-                p.kill("SIGKILL");
+                if (!p.killed) {
+                    p.kill("SIGTERM");
+                    setTimeout(() => {
+                        if (!p.killed)
+                            p.kill("SIGKILL");
+                    }, 100);
+                }
             }
-            catch { }
+            catch (e) {
+            }
             this.currentProc = null;
         }
     }

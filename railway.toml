@@ -1,0 +1,19 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+numReplicas = 1
+sleepApplication = false
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/health"
+healthcheckTimeout = 10
+
+[[deploy.healthcheck]]
+path = "/health"
+interval = 30
+timeout = 10
+
+[env]
+# Увеличиваем таймауты Node.js
+NODE_OPTIONS = "--max-old-space-size=6144"

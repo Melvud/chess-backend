@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Chess analysis backend with Stockfish",
   "main": "dist/server.js",
-  "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p . && tsc-alias -p tsconfig.json",
@@ -15,7 +14,11 @@
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
   },
-  "keywords": ["chess", "stockfish", "analysis"],
+  "keywords": [
+    "chess",
+    "stockfish",
+    "analysis"
+  ],
   "author": "Melvud",
   "license": "MIT",
   "dependencies": {
@@ -29,6 +32,7 @@
     "pino-http": "^8.5.1"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "tsc-alias": "^1.8.8",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
