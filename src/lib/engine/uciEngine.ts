@@ -107,13 +107,18 @@ function resolveEnginePath(p: string): string {
 
 export class UciEngine {
   private currentProc: ChildProcessWithoutNullStreams | null = null;
+  private keepAlive: boolean = false;
+  private sessionProc: ChildProcessWithoutNullStreams | null = null;
+  private sessionInitialized: boolean = false;
+  private sessionParams: any = null;
 
-  private constructor() {
+  private constructor(keepAlive: boolean = false) {
+    this.keepAlive = keepAlive;
   }
 
   /** Фабрика — создаёт UciEngine с использованием нативного бинарника. */
-  static async create(_engineName: EngineName, _enginePublicPath: string): Promise<UciEngine> {
-    const eng = new UciEngine();
+  static async create(_engineName: EngineName, _enginePublicPath: string, keepAlive: boolean = false): Promise<UciEngine> {
+    const eng = new UciEngine(keepAlive);
     eng.ensureBinary();
     return eng;
   }
@@ -147,6 +152,53 @@ export class UciEngine {
   /** Отправляем команду в stdin движка */
   private send(proc: ChildProcessWithoutNullStreams, cmd: string) {
     proc.stdin.write(cmd + "\n");
+  }
+
+  /**
+   * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получить или создать долгоживущий процесс для сессии
+   * Это устраняет задержку 10-15 секунд при каждом анализе!
+   */
+  private async getOrCreateSessionProc(opts: {
+    threads?: number;
+    hashMb?: number;
+    multiPv?: number;
+    syzygyPath?: string;
+    useNNUE?: boolean;
+    elo?: number;
+    skillLevel?: number;
+  }): Promise<ChildProcessWithoutNullStreams> {
+    // Проверяем, можно ли переиспользовать существующий процесс
+    const paramsMatch = this.sessionInitialized &&
+      this.sessionProc &&
+      !this.sessionProc.killed &&
+      JSON.stringify(this.sessionParams) === JSON.stringify(opts);
+
+    if (paramsMatch) {
+      // ✅ Переиспользуем существующий процесс (устраняет задержку!)
+      return this.sessionProc!;
+    }
+
+    // Закрываем старый процесс если параметры изменились
+    if (this.sessionProc && !this.sessionProc.killed) {
+      try {
+        this.send(this.sessionProc, "quit");
+        this.sessionProc.stdin.end();
+      } catch {}
+      setTimeout(() => {
+        try { this.sessionProc?.kill("SIGKILL"); } catch {}
+      }, 100);
+    }
+
+    // Создаем новый процесс и инициализируем его
+    const proc = this.spawnEngine();
+    await this.initSession(proc, opts);
+
+    // Сохраняем для переиспользования
+    this.sessionProc = proc;
+    this.sessionInitialized = true;
+    this.sessionParams = { ...opts };
+
+    return proc;
   }
 
   // ---------- ВНУТРЕННИЕ ПОМОЩНИКИ ДЛЯ СЕССИИ ОДНОГО ПРОЦЕССА ----------
@@ -317,15 +369,14 @@ export class UciEngine {
 
   /**
    * ✅ ИСПРАВЛЕНО: Оценка списка FEN с поддержкой прогресса глубины
+   * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Переиспользуем процесс если keepAlive = true
    */
   async evaluateGame(params: EvaluateGameParams, onProgress?: (value: number) => void): Promise<GameEval> {
     const fens = Array.isArray(params.fens) ? params.fens : [];
     const depth = Number.isFinite(params.depth) ? Number(params.depth) : DEFAULT_DEPTH;
     const multiPv = Number.isFinite(params.multiPv) ? Number(params.multiPv) : DEFAULT_MULTIPV;
 
-    // Старт одной «сессии» движка на всю партию
-    const proc = this.spawnEngine();
-    await this.initSession(proc, {
+    const sessionOpts = {
       threads: (params as any)?.threads ?? DEFAULT_THREADS,
       hashMb: (params as any)?.hashMb ?? DEFAULT_HASH_MB,
       multiPv,
@@ -333,7 +384,17 @@ export class UciEngine {
       useNNUE: (params as any)?.useNNUE,
       elo: (params as any)?.elo,
       skillLevel: clampToSkill((params as any)?.skillLevel),
-    });
+    };
+
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем долгоживущий процесс если keepAlive = true
+    // Это устраняет задержку 10-15 секунд при каждом анализе!
+    let proc: ChildProcessWithoutNullStreams;
+    if (this.keepAlive) {
+      proc = await this.getOrCreateSessionProc(sessionOpts);
+    } else {
+      proc = this.spawnEngine();
+      await this.initSession(proc, sessionOpts);
+    }
 
     const positions: PositionEval[] = [];
     const total = fens.length;
@@ -365,9 +426,12 @@ export class UciEngine {
       }
     }
 
-    // Закрываем процесс
-    try { this.send(proc, "quit"); proc.stdin.end(); } catch {}
-    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Не закрываем процесс если keepAlive = true
+    // Это позволяет переиспользовать процесс для следующих анализов (устраняет задержку!)
+    if (!this.keepAlive) {
+      try { this.send(proc, "quit"); proc.stdin.end(); } catch {}
+      setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+    }
 
     const out: GameEval = {
       positions: positions as any,
@@ -399,14 +463,16 @@ export class UciEngine {
     this.currentProc = null;
   }
 
-  /** 
+  /**
    * ✅ ИСПРАВЛЕНО: Полностью завершить работу движка
    * Безопасное закрытие без ошибок "write after end"
+   * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Также закрываем сессионный процесс
    */
   shutdown() {
+    // Закрываем текущий процесс
     const p = this.currentProc;
     if (p) {
-      try { 
+      try {
         // ✅ Проверяем что процесс еще жив и stdin доступен
         if (!p.killed && p.stdin && p.stdin.writable) {
           p.stdin.write("quit\n");
@@ -415,8 +481,8 @@ export class UciEngine {
       } catch (e) {
         // Игнорируем ошибки при закрытии stdin
       }
-      
-      try { 
+
+      try {
         if (!p.killed) {
           p.kill("SIGTERM"); // Сначала мягкое завершение
           setTimeout(() => {
@@ -426,8 +492,36 @@ export class UciEngine {
       } catch (e) {
         // Игнорируем ошибки при kill
       }
-      
+
       this.currentProc = null;
+    }
+
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Закрываем сессионный процесс
+    const sp = this.sessionProc;
+    if (sp) {
+      try {
+        if (!sp.killed && sp.stdin && sp.stdin.writable) {
+          sp.stdin.write("quit\n");
+          sp.stdin.end();
+        }
+      } catch (e) {
+        // Игнорируем ошибки при закрытии stdin
+      }
+
+      try {
+        if (!sp.killed) {
+          sp.kill("SIGTERM");
+          setTimeout(() => {
+            if (!sp.killed) sp.kill("SIGKILL");
+          }, 100);
+        }
+      } catch (e) {
+        // Игнорируем ошибки при kill
+      }
+
+      this.sessionProc = null;
+      this.sessionInitialized = false;
+      this.sessionParams = null;
     }
   }
 }

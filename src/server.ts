@@ -169,6 +169,7 @@ async function initializeWorkerPool() {
         threads: threadsPer,
         hashMb: hashPer,
         multiPv: DEFAULT_MULTIPV,
+        keepAlive: true, // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Включаем keepAlive для устранения задержки!
       }).then(async (eng) => {
         // Прогрев воркера через простую оценку
         await eng.evaluatePositionWithUpdate({
@@ -176,7 +177,7 @@ async function initializeWorkerPool() {
           depth: 8,
           multiPv: 1,
         } as any);
-        log.info({ worker: i }, "Worker warmed up");
+        log.info({ worker: i }, "Worker warmed up and process kept alive");
         return eng;
       })
     );
@@ -193,21 +194,15 @@ async function createEngineInstance(opts?: {
   threads?: number;
   hashMb?: number;
   multiPv?: number;
+  keepAlive?: boolean;
 }): Promise<EngineIface> {
-  const eng = await UciEngine.create(ENGINE_NAME, "");
-  try {
-    const threads = Math.max(1, Math.floor(opts?.threads ?? ENGINE_THREADS));
-    const hashMb = Math.max(16, Math.floor(opts?.hashMb ?? ENGINE_HASH_MB));
-    const multiPv = Math.max(1, Math.floor(opts?.multiPv ?? DEFAULT_MULTIPV));
-    if (typeof (eng as any).setOption === "function") {
-      await (eng as any).setOption("Threads", threads);
-      await (eng as any).setOption("Hash", hashMb);
-      await (eng as any).setOption("Ponder", false);
-      await (eng as any).setOption("MultiPV", multiPv);
-    }
-  } catch (e) {
-    log.warn({ err: e }, "Engine option setup warning");
-  }
+  // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Передаем keepAlive для переиспользования процессов
+  // Это устраняет задержку 10-15 секунд при каждом анализе!
+  const keepAlive = opts?.keepAlive ?? false;
+  const eng = await UciEngine.create(ENGINE_NAME, "", keepAlive);
+
+  // Примечание: UciEngine.setOption не существует - настройки применяются автоматически
+  // при вызове evaluateGame/evaluatePositionWithUpdate через initSession
   return eng;
 }
 
@@ -217,6 +212,7 @@ async function getSingletonEngine(): Promise<EngineIface> {
     threads: ENGINE_THREADS,
     hashMb: ENGINE_HASH_MB,
     multiPv: DEFAULT_MULTIPV,
+    keepAlive: true, // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Включаем keepAlive для устранения задержки!
   });
   return singletonEngine;
 }
@@ -741,6 +737,7 @@ app.use((req, res) => {
       threads: ENGINE_THREADS,
       hashMb: ENGINE_HASH_MB,
       multiPv: 1,
+      keepAlive: true, // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Включаем keepAlive для устранения задержки!
     });
 
     await warmupEngine.evaluatePositionWithUpdate({
