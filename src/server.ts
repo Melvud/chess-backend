@@ -228,18 +228,17 @@ async function evaluateGameParallel(
   // ✅ Адаптивное количество воркеров
   let workers: number;
   if (total <= 20) {
-    workers = 1; // Малые партии - один процесс с теплым кэшем
+    workers = 1;
   } else if (total <= 40) {
-    workers = Math.min(2, ENGINE_WORKERS_MAX); // Средние - 2 воркера
+    workers = Math.min(2, ENGINE_WORKERS_MAX);
   } else {
     workers = Number.isFinite(requested) && requested > 0
       ? Math.min(Math.max(1, Math.floor(requested)), ENGINE_WORKERS_MAX)
-      : ENGINE_WORKERS_MAX; // Большие - максимум воркеров
+      : ENGINE_WORKERS_MAX;
   }
 
   log.info({ workers, total, depth: baseParams.depth }, "Starting parallel evaluation");
 
-  // ✅ Один воркер = singleton с теплым кэшем
   if (workers === 1) {
     const eng = await getSingletonEngine();
     const result = await eng.evaluateGame(baseParams, onProgress);
@@ -248,7 +247,6 @@ async function evaluateGameParallel(
     return result;
   }
 
-  // ✅ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА
   const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / workers));
   const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / workers));
   const multiPvPer = baseParams.multiPv ?? DEFAULT_MULTIPV;
@@ -282,7 +280,6 @@ async function evaluateGameParallel(
         perWorkerDone[wi] = shardDone;
         reportProgress();
         
-        // ✅ Обновляем текущую позицию для отображения
         if (progressId && shardDone > 0 && shardDone <= shardFens.length) {
           const currentIdx = idxs[shardDone - 1];
           const currentFen = currentIdx < fens.length ? fens[currentIdx] : undefined;
@@ -311,7 +308,6 @@ async function evaluateGameParallel(
 
   const shards = await Promise.all(tasks);
 
-  // ✅ Безопасное закрытие воркеров
   await Promise.allSettled(
     shards.map(async (shard) => {
       return new Promise<void>((resolve) => {
@@ -348,47 +344,6 @@ async function evaluateGameParallel(
   return { positions: positionsMerged, settings } as any as GameEval;
 }
 
-// -------------------- Helper: Нормализация к перспективе белых --------------------
-/**
- * ✅ КРИТИЧЕСКИ ВАЖНО: Stockfish возвращает оценку с точки зрения стороны, которая ходит.
- * Мы нормализуем все к перспективе белых: + = белые лучше, - = чёрные лучше
- */
-function normalizeEvalToWhitePOV(
-  rawLine: any,
-  fen: string
-): { cp?: number; mate?: number; pv: string[] } {
-  const whiteToPlay = fen.split(" ")[1] === "w";
-  
-  let cp = typeof rawLine?.cp === "number" ? rawLine.cp : undefined;
-  let mate = typeof rawLine?.mate === "number" ? rawLine.mate : undefined;
-  
-  // ✅ Если ход чёрных, инвертируем оценку
-  if (!whiteToPlay) {
-    if (cp !== undefined) cp = -cp;
-    if (mate !== undefined) {
-      // Специальная обработка mate: 0 (текущая сторона заматована)
-      if (mate === 0) {
-        mate = 1; // Чёрные заматованы → белые выиграли
-      } else {
-        mate = -mate;
-      }
-    }
-  } else {
-    // Если ход белых и mate: 0, значит белые заматованы
-    if (mate === 0) {
-      mate = -1;
-    }
-  }
-  
-  const pv: string[] = Array.isArray(rawLine?.pv)
-    ? rawLine.pv
-    : Array.isArray(rawLine?.pv?.moves)
-    ? rawLine.pv.moves
-    : [];
-  
-  return { cp, mate, pv };
-}
-
 // -------------------- Helper: Convert to client format --------------------
 function toClientPosition(
   posAny: any,
@@ -399,32 +354,34 @@ function toClientPosition(
 ): ClientPosition {
   const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
   
-  // ✅ Нормализуем каждую линию к перспективе белых
+  // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Возвращаем СЫРЫЕ данные Stockfish БЕЗ нормализации
+  // Клиент сам нормализует данные ТОЛЬКО для локального движка через normalizeToWhitePOV
   const lines: ClientLine[] = rawLines.map((l: any) => {
-    const normalized = normalizeEvalToWhitePOV(l, fen);
+    const pv: string[] = Array.isArray(l?.pv)
+      ? l.pv
+      : Array.isArray(l?.pv?.moves)
+      ? l.pv.moves
+      : [];
+    
     return {
-      pv: normalized.pv,
-      cp: normalized.cp,
-      mate: normalized.mate,
+      pv: pv,
+      cp: typeof l?.cp === "number" ? l.cp : undefined,
+      mate: typeof l?.mate === "number" ? l.mate : undefined,
     };
   });
 
-  // ✅ Fallback для пустых линий или мата
   if (lines.length === 0) {
     if (isLastPosition && gameResult) {
-      if (gameResult === "1-0") {
-        lines.push({ pv: [], mate: 1 }); // Белые победили
-      } else if (gameResult === "0-1") {
-        lines.push({ pv: [], mate: -1 }); // Чёрные победили
+      if (gameResult === "1-0" || gameResult === "0-1") {
+        lines.push({ pv: [], mate: 0 });
       } else {
-        lines.push({ pv: [], cp: 0 }); // Ничья
+        lines.push({ pv: [], cp: 0 });
       }
     } else {
       lines.push({ pv: [], cp: 0 });
     }
   }
 
-  // ✅ Best move из первой линии
   const firstPv = lines[0]?.pv;
   const best =
     (posAny as any)?.bestMove ??
@@ -468,7 +425,7 @@ app.get("/api/v1/progress/:id", (req, res) => {
 
 /**
  * ✅ ОСНОВНОЙ ENDPOINT: Оценка позиций БЕЗ анализа
- * Клиент получает только нормализованные cp/mate и делает весь анализ через LocalGameAnalyzer
+ * Возвращает СЫРЫЕ данные Stockfish, клиент делает весь анализ через LocalGameAnalyzer
  */
 app.post("/api/v1/evaluate/positions", async (req, res) => {
   const progressId = String(
@@ -528,7 +485,7 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         setProgress(progressId, { stage: "done" as ProgressStage, done: fens.length });
       }
 
-      // ✅ Возвращаем ТОЛЬКО позиции с нормализованными cp/mate, БЕЗ анализа
+      // ✅ Возвращаем ТОЛЬКО позиции с СЫРЫМИ cp/mate, БЕЗ анализа
       const positions: ClientPosition[] = fens.map((fen: string, idx: number) => {
         const posAny: any = (out.positions as any[])[idx] ?? {};
         const isLast = idx === fens.length - 1;
@@ -614,20 +571,18 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         const mv = ch.move({ from, to, promotion: prom as any });
 
         if (mv && ch.isCheckmate && ch.isCheckmate()) {
-          const moverIsWhite = String(beforeFen).includes(" w ");
-          const mateVal = moverIsWhite ? +1 : -1;
-
+          // ✅ Возвращаем сырые данные - mate: 0
           if (positions[1].lines.length === 0) {
-            positions[1].lines.push({ pv: [], mate: mateVal });
+            positions[1].lines.push({ pv: [], mate: 0 });
           } else {
             positions[1].lines[0] = {
               ...(positions[1].lines[0] || {}),
-              mate: mateVal,
+              mate: 0,
             };
             delete (positions[1].lines[0] as any).cp;
           }
 
-          log.info({ moverIsWhite, mateVal }, "Checkmate detected");
+          log.info("Checkmate detected, returning mate: 0 (raw Stockfish format)");
         }
       } catch (e) {
         log.warn({ err: e }, "Checkmate detection failed");
@@ -696,20 +651,17 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
 
     const rawEval = await engine.evaluatePositionWithUpdate(params);
     
-    // ✅ Нормализуем результат к перспективе белых
-    const normalizedLines = Array.isArray(rawEval?.lines)
-      ? rawEval.lines.map((line: any) => {
-          const normalized = normalizeEvalToWhitePOV(line, fen);
-          return {
-            pv: normalized.pv,
-            cp: normalized.cp,
-            mate: normalized.mate,
-          };
-        })
+    // ✅ Возвращаем сырые данные без нормализации
+    const rawLines = Array.isArray(rawEval?.lines)
+      ? rawEval.lines.map((line: any) => ({
+          pv: line.pv,
+          cp: line.cp,
+          mate: line.mate,
+        }))
       : [];
 
     return res.json({
-      lines: normalizedLines,
+      lines: rawLines,
       bestMove: (rawEval as any)?.bestMove,
     });
   } catch (e: any) {
@@ -737,7 +689,6 @@ app.use((req, res) => {
       multiPv: 1,
     });
 
-    // Оцениваем стартовую позицию для инициализации
     await warmupEngine.evaluatePositionWithUpdate({
       fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
       depth: 10,
@@ -745,8 +696,6 @@ app.use((req, res) => {
     } as any);
 
     log.info("✅ Engine warmed up and ready");
-
-    // Сохраняем как singleton
     singletonEngine = warmupEngine;
   } catch (e) {
     log.warn({ err: e }, "⚠️  Engine warmup failed, will initialize on first request");

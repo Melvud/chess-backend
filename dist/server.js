@@ -10,8 +10,9 @@ const node_path_1 = __importDefault(require("node:path"));
 const node_os_1 = __importDefault(require("node:os"));
 const pino_1 = __importDefault(require("pino"));
 const pino_http_1 = __importDefault(require("pino-http"));
-const enums_1 = require("./types/enums");
-const uciEngine_1 = require("./lib/engine/uciEngine");
+const chess_js_1 = require("chess.js");
+const enums_1 = require("@/types/enums");
+const uciEngine_1 = require("@/lib/engine/uciEngine");
 const PORT = Number(process.env.PORT ?? 8080);
 const ENGINE_NAME = process.env.ENGINE_NAME ?? enums_1.EngineName.Stockfish17Lite;
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
@@ -72,7 +73,9 @@ async function createEngineInstance(opts) {
             await eng.setOption("MultiPV", multiPv);
         }
     }
-    catch { }
+    catch (e) {
+        log.warn({ err: e }, "Engine option setup warning");
+    }
     return eng;
 }
 async function getSingletonEngine() {
@@ -185,37 +188,66 @@ async function evaluateGameParallel(baseParams, workersRequested, progressId, on
             __idx: idxs[k],
             ...pos,
         }));
-        return { ...out, positions: positionsWithIdx };
+        return { ...out, positions: positionsWithIdx, __engine: eng };
     });
     const shards = await Promise.all(tasks);
-    await Promise.allSettled(tasks.map(async (_, wi) => {
+    await Promise.allSettled(shards.map(async (shard) => {
         return new Promise((resolve) => {
             setTimeout(() => {
                 try {
-                    const worker = shards[wi]?.__engine;
+                    const worker = shard?.__engine;
                     if (worker && typeof worker.shutdown === "function") {
                         worker.shutdown();
                     }
                 }
                 catch (e) {
-                    log.warn({ err: String(e), worker: wi }, "Worker shutdown warning");
+                    log.warn({ err: String(e) }, "Worker shutdown warning");
                 }
                 resolve();
             }, 50);
         });
     }));
     const positionsMerged = new Array(total);
-    for (const s of shards)
+    for (const s of shards) {
         for (const p of s.positions) {
             positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
         }
+    }
     const first = shards.find((s) => Array.isArray(s.positions) && s.positions.length > 0);
     const settings = first?.settings ?? {};
     const elapsed = Date.now() - startTime;
     log.info({ elapsed, msPerMove: Math.round(elapsed / total), workers }, "Parallel evaluation complete");
     return { positions: positionsMerged, settings };
 }
-function toClientPosition(posAny, fen, idx) {
+function normalizeEvalToWhitePOV(rawLine, fen) {
+    const whiteToPlay = fen.split(" ")[1] === "w";
+    let cp = typeof rawLine?.cp === "number" ? rawLine.cp : undefined;
+    let mate = typeof rawLine?.mate === "number" ? rawLine.mate : undefined;
+    if (!whiteToPlay) {
+        if (cp !== undefined)
+            cp = -cp;
+        if (mate !== undefined) {
+            if (mate === 0) {
+                mate = 1;
+            }
+            else {
+                mate = -mate;
+            }
+        }
+    }
+    else {
+        if (mate === 0) {
+            mate = -1;
+        }
+    }
+    const pv = Array.isArray(rawLine?.pv)
+        ? rawLine.pv
+        : Array.isArray(rawLine?.pv?.moves)
+            ? rawLine.pv.moves
+            : [];
+    return { cp, mate, pv };
+}
+function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
     const rawLines = Array.isArray(posAny?.lines) ? posAny.lines : [];
     const lines = rawLines.map((l) => {
         const pv = Array.isArray(l?.pv)
@@ -223,12 +255,24 @@ function toClientPosition(posAny, fen, idx) {
             : Array.isArray(l?.pv?.moves)
                 ? l.pv.moves
                 : [];
-        const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
-        const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
-        return { pv, cp: cpVal, mate: mateVal };
+        return {
+            pv: pv,
+            cp: typeof l?.cp === "number" ? l.cp : undefined,
+            mate: typeof l?.mate === "number" ? l.mate : undefined,
+        };
     });
     if (lines.length === 0) {
-        lines.push({ pv: [], cp: 0 });
+        if (isLastPosition && gameResult) {
+            if (gameResult === "1-0" || gameResult === "0-1") {
+                lines.push({ pv: [], mate: 0 });
+            }
+            else {
+                lines.push({ pv: [], cp: 0 });
+            }
+        }
+        else {
+            lines.push({ pv: [], cp: 0 });
+        }
     }
     const firstPv = lines[0]?.pv;
     const best = posAny?.bestMove ??
@@ -270,6 +314,7 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         const body = req.body ?? {};
         const fens = Array.isArray(body.fens) ? body.fens : [];
         const uciMoves = Array.isArray(body.uciMoves) ? body.uciMoves : [];
+        const gameResult = typeof body.gameResult === "string" ? body.gameResult : undefined;
         if (progressId) {
             initProgress(progressId, fens.length || 0);
             setProgress(progressId, { stage: "queued" });
@@ -291,8 +336,9 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
             ...(body.skillLevel !== undefined ? { skillLevel: body.skillLevel } : {}),
         };
         const result = await jobQueue.enqueue(async () => {
-            if (progressId)
+            if (progressId) {
                 setProgress(progressId, { stage: "evaluating", done: 0 });
+            }
             const out = await evaluateGameParallel(baseParams, Number(body.workersNb ?? 0), progressId || null, (p) => {
                 if (progressId) {
                     const done = Math.floor((p / 100) * fens.length);
@@ -302,11 +348,13 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
                     });
                 }
             });
-            if (progressId)
+            if (progressId) {
                 setProgress(progressId, { stage: "done", done: fens.length });
+            }
             const positions = fens.map((fen, idx) => {
                 const posAny = out.positions[idx] ?? {};
-                return toClientPosition(posAny, fen, idx);
+                const isLast = idx === fens.length - 1;
+                return toClientPosition(posAny, fen, idx, isLast, gameResult);
             });
             return {
                 positions,
@@ -331,7 +379,90 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
 });
 app.post("/api/v1/evaluate/position", async (req, res) => {
     try {
-        const { fen, depth, multiPv, useNNUE, elo, skillLevel } = req.body ?? {};
+        const { fen, depth, multiPv, useNNUE, elo, skillLevel, beforeFen, afterFen, uciMove, } = req.body ?? {};
+        if (typeof beforeFen === "string" &&
+            typeof afterFen === "string" &&
+            typeof uciMove === "string") {
+            const effDepth = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
+            const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
+            const baseParams = {
+                fens: [String(beforeFen), String(afterFen)],
+                uciMoves: [String(uciMove)],
+                depth: effDepth,
+                multiPv: effMultiPv,
+                ...(useNNUE !== undefined ? { useNNUE } : {}),
+                ...(elo !== undefined ? { elo } : {}),
+                ...(skillLevel !== undefined ? { skillLevel } : {}),
+            };
+            const out = await evaluateGameParallel(baseParams, 1, null);
+            const rawPositions = Array.isArray(out?.positions)
+                ? out.positions
+                : [];
+            const fens2 = [String(beforeFen), String(afterFen)];
+            const positions = fens2.map((fenStr, idx) => {
+                const posAny = rawPositions[idx] ?? {};
+                return toClientPosition(posAny, fenStr, idx, idx === 1);
+            });
+            try {
+                const ch = new chess_js_1.Chess();
+                ch.load(String(beforeFen));
+                const from = String(uciMove).slice(0, 2);
+                const to = String(uciMove).slice(2, 4);
+                const prom = String(uciMove).slice(4) || undefined;
+                const mv = ch.move({ from, to, promotion: prom });
+                if (mv && ch.isCheckmate && ch.isCheckmate()) {
+                    if (positions[1].lines.length === 0) {
+                        positions[1].lines.push({ pv: [], mate: 0 });
+                    }
+                    else {
+                        positions[1].lines[0] = {
+                            ...(positions[1].lines[0] || {}),
+                            mate: 0,
+                        };
+                        delete positions[1].lines[0].cp;
+                    }
+                    log.info("Checkmate detected, returning mate: 0 (raw Stockfish format)");
+                }
+            }
+            catch (e) {
+                log.warn({ err: e }, "Checkmate detection failed");
+            }
+            const needBestFix = !positions[0]?.lines?.[0]?.best ||
+                String(positions[0].lines[0].best).trim() === "";
+            if (needBestFix) {
+                try {
+                    const engine = await getSingletonEngine();
+                    const eval0 = await engine.evaluatePositionWithUpdate({
+                        fen: String(beforeFen),
+                        depth: effDepth,
+                        multiPv: effMultiPv,
+                        useNNUE,
+                        elo,
+                        ...(skillLevel !== undefined ? { skillLevel } : {}),
+                    });
+                    const rawTop = Array.isArray(eval0?.lines) ? eval0.lines[0] : undefined;
+                    const bestFromEngine = eval0?.bestMove ??
+                        (Array.isArray(rawTop?.pv) ? rawTop.pv[0] : undefined) ??
+                        "";
+                    if (bestFromEngine) {
+                        positions[0].lines[0].best = String(bestFromEngine);
+                        if (!Array.isArray(positions[0].lines[0].pv) || positions[0].lines[0].pv.length === 0) {
+                            positions[0].lines[0].pv = [String(bestFromEngine)];
+                        }
+                    }
+                }
+                catch (e) {
+                    log.warn({ err: e }, "Best move retrieval failed");
+                }
+            }
+            const bestFromBefore = String(positions[0]?.lines?.[0]?.best ??
+                positions[0]?.lines?.[0]?.pv?.[0] ??
+                "") || undefined;
+            return res.json({
+                lines: positions[1].lines,
+                bestMove: bestFromBefore,
+            });
+        }
         if (!fen || typeof fen !== "string") {
             return res.status(400).json({ error: "fen_required" });
         }
@@ -344,10 +475,21 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             elo,
             ...(skillLevel !== undefined ? { skillLevel } : {}),
         };
-        const finalEval = await engine.evaluatePositionWithUpdate(params);
-        return res.json(finalEval);
+        const rawEval = await engine.evaluatePositionWithUpdate(params);
+        const rawLines = Array.isArray(rawEval?.lines)
+            ? rawEval.lines.map((line) => ({
+                pv: line.pv,
+                cp: line.cp,
+                mate: line.mate,
+            }))
+            : [];
+        return res.json({
+            lines: rawLines,
+            bestMove: rawEval?.bestMove,
+        });
     }
     catch (e) {
+        log.error({ err: e }, "Position evaluation failed");
         return res.status(500).json({
             error: "evaluate_position_failed",
             details: String(e?.message ?? e),
@@ -384,7 +526,8 @@ app.listen(PORT, () => {
         port: PORT,
         threads: ENGINE_THREADS,
         hashMB: ENGINE_HASH_MB,
-        maxWorkers: ENGINE_WORKERS_MAX
+        maxWorkers: ENGINE_WORKERS_MAX,
+        concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
     }, "🚀 Server started");
 });
 if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {

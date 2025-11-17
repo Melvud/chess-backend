@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.computeAccuracy = void 0;
-const math_1 = require("../../math");
+const math_1 = require("@/lib/math");
 const winPercentage_1 = require("./winPercentage");
 const computeAccuracy = (positions) => {
     const positionsWinPercentage = positions.map(winPercentage_1.getPositionWinPercentage);
