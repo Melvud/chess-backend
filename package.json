@@ -1,36 +1,36 @@
 {
   "name": "chess-analysis-backend",
   "version": "1.0.0",
-  "description": "High-performance chess analysis backend with Stockfish",
-  "private": true,
-  "license": "MIT",
-  "engines": {
-    "node": ">=18.17"
-  },
+  "description": "Chess analysis backend with Stockfish",
   "main": "dist/server.js",
-  "types": "dist/server.d.ts",
+  "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p . && tsc-alias -p tsconfig.json",
     "start": "node dist/server.js",
-    "typecheck": "tsc -p . --noEmit",
-    "test": "echo \"No tests yet\" && exit 0"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts"
   },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": ["chess", "stockfish", "analysis"],
+  "author": "Melvud",
+  "license": "MIT",
   "dependencies": {
-    "chess.js": "^1.4.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "chess.js": "^1.0.0-beta.8",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.2",
-    "express": "^4.21.2",
-    "pino": "^9.11.0",
-    "pino-http": "^10.5.0"
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "pino": "^8.16.2",
+    "pino-http": "^8.5.1"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.23",
-    "@types/node": "^22.18.6",
-    "ts-node": "^10.9.2",
-    "tsc-alias": "^1.8.16",
-    "tsx": "^4.16.2",
-    "typescript": "^5.9.2"
+    "tsc-alias": "^1.8.8",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
   }
 }

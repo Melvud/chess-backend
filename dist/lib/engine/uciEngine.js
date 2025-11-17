@@ -75,18 +75,6 @@ function waitForBestmove(proc) {
         proc.stdout.on("data", handler);
     });
 }
-function waitForReadyOk(proc) {
-    return new Promise((resolve) => {
-        const handler = (chunk) => {
-            const str = chunk.toString("utf8");
-            if (str.includes("readyok")) {
-                proc.stdout.off("data", handler);
-                resolve();
-            }
-        };
-        proc.stdout.on("data", handler);
-    });
-}
 const ENGINE_PATH_ENV = process.env.STOCKFISH_PATH || process.env.STOCKFISH_BIN || "./bin/stockfish";
 const ENGINE_PATH = resolveEnginePath(ENGINE_PATH_ENV);
 const DEFAULT_DEPTH = Number.isFinite(Number(process.env.ENGINE_DEPTH))
@@ -96,10 +84,10 @@ const DEFAULT_MULTIPV = Number.isFinite(Number(process.env.ENGINE_MULTIPV))
     ? Number(process.env.ENGINE_MULTIPV)
     : 3;
 const CPU_COUNT = Math.max(1, node_os_1.default.cpus()?.length ?? 1);
-const DEFAULT_THREADS = Math.max(1, CPU_COUNT);
+const DEFAULT_THREADS = Math.min(8, CPU_COUNT);
 const DEFAULT_HASH_MB = Number.isFinite(Number(process.env.ENGINE_HASH_MB))
     ? Number(process.env.ENGINE_HASH_MB)
-    : 256;
+    : 2048;
 const SKILL_LEVEL_MIN = 0;
 const SKILL_LEVEL_MAX = 20;
 function resolveEnginePath(p) {
@@ -135,17 +123,6 @@ class UciEngine {
         const bin = ENGINE_PATH;
         const proc = (0, node_child_process_1.spawn)(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
         this.currentProc = proc;
-        proc.on("error", (err) => {
-            console.error(`Failed to spawn Stockfish at ${bin}:`, err);
-            if (err.code === "EACCES") {
-                console.error("Permission denied. The binary may not have execute permissions.");
-                console.error("Try running: chmod +x", bin);
-            }
-            else if (err.code === "ENOENT") {
-                console.error("File not found. Check STOCKFISH_PATH environment variable.");
-            }
-            throw err;
-        });
         proc.on("exit", () => {
             if (this.currentProc === proc)
                 this.currentProc = null;
@@ -168,6 +145,7 @@ class UciEngine {
         this.send(proc, `setoption name Threads value ${threads}`);
         this.send(proc, `setoption name Hash value ${hashMb}`);
         this.send(proc, `setoption name MultiPV value ${multiPv}`);
+        this.send(proc, "setoption name Ponder value false");
         if (opts.syzygyPath)
             this.send(proc, `setoption name SyzygyPath value ${opts.syzygyPath}`);
         if (typeof useNNUE === "boolean") {
@@ -182,7 +160,15 @@ class UciEngine {
             this.send(proc, `setoption name UCI_Elo value ${elo}`);
         }
         this.send(proc, "isready");
-        await waitForReadyOk(proc);
+        await new Promise((resolve) => {
+            const handler = (chunk) => {
+                if (chunk.toString("utf8").includes("readyok")) {
+                    proc.stdout.off("data", handler);
+                    resolve();
+                }
+            };
+            proc.stdout.on("data", handler);
+        });
         this.send(proc, "ucinewgame");
     }
     async evaluateFenOnSession(proc, fen, depth, onDepth) {
@@ -282,7 +268,17 @@ class UciEngine {
         const total = fens.length;
         for (let i = 0; i < total; i++) {
             const fen = String(fens[i] ?? "");
-            const pe = await this.evaluateFenOnSession(proc, fen, depth, undefined);
+            const pe = await this.evaluateFenOnSession(proc, fen, depth, (d, depthPct) => {
+                if (onProgress) {
+                    const posProgress = (i / total) * 100;
+                    const depthContribution = (depthPct / total);
+                    const combined = Math.min(100, posProgress + depthContribution);
+                    try {
+                        onProgress(combined);
+                    }
+                    catch { }
+                }
+            });
             positions.push(pe);
             if (onProgress) {
                 const pct = Math.round(((i + 1) / Math.max(1, total)) * 100);

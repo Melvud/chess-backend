@@ -17,10 +17,10 @@ const ENGINE_NAME = process.env.ENGINE_NAME ?? enums_1.EngineName.Stockfish17Lit
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
 const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
 const CPU_CORES = Math.max(1, node_os_1.default.cpus()?.length ?? 1);
-const ENGINE_THREADS = Math.max(1, Number(process.env.ENGINE_THREADS ?? CPU_CORES));
-const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 256));
-const ENGINE_WORKERS_MAX = Math.max(1, Number(process.env.ENGINE_WORKERS_MAX ?? CPU_CORES));
-const ENGINE_MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? Math.ceil(CPU_CORES / 2)));
+const ENGINE_THREADS = Math.max(1, Number(process.env.ENGINE_THREADS ?? Math.min(8, CPU_CORES)));
+const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 2048));
+const ENGINE_WORKERS_MAX = Math.max(1, Number(process.env.ENGINE_WORKERS_MAX ?? Math.min(4, Math.floor(CPU_CORES / 2))));
+const ENGINE_MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? 2));
 const app = (0, express_1.default)();
 const log = (0, pino_1.default)({ level: process.env.LOG_LEVEL ?? "info" });
 app.use((0, cors_1.default)({
@@ -114,92 +114,147 @@ class AsyncQueue {
     }
 }
 const jobQueue = new AsyncQueue(ENGINE_MAX_CONCURRENT_JOBS);
-async function evaluateGameParallel(params, requestedWorkers, onProgress) {
-    const fens = Array.isArray(params.fens) ? params.fens : [];
+async function evaluateGameParallel(baseParams, workersRequested, progressId, onProgress) {
+    const fens = baseParams.fens ?? [];
+    const uciMoves = baseParams.uciMoves ?? [];
     const total = fens.length;
-    if (total === 0) {
-        return {
-            positions: [],
-            acpl: { white: 0, black: 0 },
-            settings: {
-                engine: "stockfish-native",
-                depth: params.depth ?? DEFAULT_DEPTH,
-                multiPv: params.multiPv ?? DEFAULT_MULTIPV,
-            },
-        };
+    const startTime = Date.now();
+    const requested = Number(workersRequested);
+    let workers;
+    if (total <= 20) {
+        workers = 1;
     }
-    const effectiveWorkers = Math.max(1, Math.min(ENGINE_WORKERS_MAX, Math.floor(requestedWorkers) || 1));
-    log.info({ effectiveWorkers, total }, "Starting parallel evaluation");
-    const results = new Array(total);
-    let completed = 0;
-    const workerPool = await Promise.all(Array.from({ length: effectiveWorkers }, () => createEngineInstance({
-        threads: Math.max(1, Math.floor(ENGINE_THREADS / effectiveWorkers)),
-        hashMb: Math.max(16, Math.floor(ENGINE_HASH_MB / effectiveWorkers)),
-        multiPv: params.multiPv ?? DEFAULT_MULTIPV,
-    })));
-    try {
-        const tasks = fens.map((fen, idx) => async () => {
-            const worker = workerPool[idx % effectiveWorkers];
-            const evaluated = await worker.evaluateGame({
-                fens: [fen],
-                depth: params.depth ?? DEFAULT_DEPTH,
-                multiPv: params.multiPv ?? DEFAULT_MULTIPV,
-                ...(params.useNNUE !== undefined ? { useNNUE: params.useNNUE } : {}),
-                ...(params.elo !== undefined ? { elo: params.elo } : {}),
-                ...(params.skillLevel !== undefined ? { skillLevel: params.skillLevel } : {}),
-            }, undefined);
-            results[idx] = evaluated.positions[0];
-            completed++;
-            if (onProgress) {
-                const pct = Math.round((completed / total) * 100);
-                onProgress(pct);
-            }
+    else if (total <= 40) {
+        workers = Math.min(2, ENGINE_WORKERS_MAX);
+    }
+    else {
+        workers = Number.isFinite(requested) && requested > 0
+            ? Math.min(Math.max(1, Math.floor(requested)), ENGINE_WORKERS_MAX)
+            : ENGINE_WORKERS_MAX;
+    }
+    log.info({ workers, total, depth: baseParams.depth }, "Starting parallel evaluation");
+    if (workers === 1) {
+        const eng = await getSingletonEngine();
+        const result = await eng.evaluateGame(baseParams, onProgress);
+        const elapsed = Date.now() - startTime;
+        log.info({ elapsed, msPerMove: Math.round(elapsed / total) }, "Evaluation complete");
+        return result;
+    }
+    const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / workers));
+    const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / workers));
+    const multiPvPer = baseParams.multiPv ?? DEFAULT_MULTIPV;
+    const indexes = Array.from({ length: workers }, () => []);
+    for (let i = 0; i < total; i++)
+        indexes[i % workers].push(i);
+    const perWorkerDone = new Array(workers).fill(0);
+    const reportProgress = () => {
+        if (!onProgress)
+            return;
+        const done = perWorkerDone.reduce((a, b) => a + b, 0);
+        const pct = Math.min(100, (done / Math.max(1, total)) * 100);
+        onProgress(pct);
+    };
+    const tasks = indexes.map(async (idxs, wi) => {
+        if (idxs.length === 0)
+            return { positions: [], settings: {} };
+        const shardFens = idxs.map((i) => baseParams.fens[i]);
+        const shardUci = idxs.map((i) => baseParams.uciMoves[i]);
+        const eng = await createEngineInstance({
+            threads: threadsPer,
+            hashMb: hashPer,
+            multiPv: multiPvPer,
         });
-        const concurrency = effectiveWorkers;
-        const executing = [];
-        for (const task of tasks) {
-            const p = task();
-            executing.push(p);
-            if (executing.length >= concurrency) {
-                await Promise.race(executing);
-                executing.splice(executing.findIndex((e) => e === p), 1);
+        const onShardProgress = (p) => {
+            const shardDone = Math.round((p / 100) * shardFens.length);
+            if (shardDone > perWorkerDone[wi]) {
+                perWorkerDone[wi] = shardDone;
+                reportProgress();
+                if (progressId && shardDone > 0 && shardDone <= shardFens.length) {
+                    const currentIdx = idxs[shardDone - 1];
+                    const currentFen = currentIdx < fens.length ? fens[currentIdx] : undefined;
+                    const currentUci = currentIdx < uciMoves.length ? uciMoves[currentIdx] : undefined;
+                    setProgress(progressId, {
+                        fen: currentFen,
+                        currentUci: currentUci,
+                    });
+                }
             }
-        }
-        await Promise.all(executing);
-        log.info({ completed: results.length }, "Parallel evaluation complete");
-        return {
-            positions: results,
-            acpl: { white: 0, black: 0 },
-            settings: {
-                engine: "stockfish-native",
-                depth: params.depth ?? DEFAULT_DEPTH,
-                multiPv: params.multiPv ?? DEFAULT_MULTIPV,
-            },
         };
-    }
-    finally {
-        for (const worker of workerPool) {
-            if (typeof worker.shutdown === "function") {
-                try {
-                    worker.shutdown();
-                }
-                catch (e) {
-                    log.warn({ err: e }, "Worker shutdown error");
-                }
+        const out = await eng.evaluateGame({ ...baseParams, fens: shardFens, uciMoves: shardUci }, onShardProgress);
+        try {
+            if (typeof eng.shutdown === "function") {
+                eng.shutdown();
             }
         }
-    }
+        catch (e) {
+            log.warn({ err: e, worker: wi }, "Worker shutdown error");
+        }
+        const positionsWithIdx = out.positions.map((pos, k) => ({
+            __idx: idxs[k],
+            ...pos,
+        }));
+        return { ...out, positions: positionsWithIdx };
+    });
+    const shards = await Promise.all(tasks);
+    const positionsMerged = new Array(total);
+    for (const s of shards)
+        for (const p of s.positions) {
+            positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
+        }
+    const first = shards.find((s) => Array.isArray(s.positions) && s.positions.length > 0);
+    const settings = first?.settings ?? {};
+    const elapsed = Date.now() - startTime;
+    log.info({ elapsed, msPerMove: Math.round(elapsed / total), workers }, "Parallel evaluation complete");
+    return { positions: positionsMerged, settings };
 }
-app.get("/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: Date.now() });
-});
-app.get("/api/v1/progress/:id", (req, res) => {
-    const id = String(req.params.id);
-    const p = PROGRESS.get(id);
-    if (!p) {
-        return res.status(404).json({ error: "progress_not_found" });
+function toClientPosition(posAny, fen, idx) {
+    const rawLines = Array.isArray(posAny?.lines) ? posAny.lines : [];
+    const lines = rawLines.map((l) => {
+        const pv = Array.isArray(l?.pv)
+            ? l.pv
+            : Array.isArray(l?.pv?.moves)
+                ? l.pv.moves
+                : [];
+        const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
+        const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
+        return { pv, cp: cpVal, mate: mateVal };
+    });
+    if (lines.length === 0) {
+        lines.push({ pv: [], cp: 0 });
     }
-    return res.json(p);
+    const firstPv = lines[0]?.pv;
+    const best = posAny?.bestMove ??
+        (Array.isArray(firstPv) && firstPv.length > 0 ? firstPv[0] : undefined) ??
+        "";
+    if (lines[0]) {
+        lines[0].best = String(best);
+    }
+    return {
+        fen: String(fen ?? ""),
+        idx,
+        lines,
+    };
+}
+app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/ping", (_req, res) => res.json({ ok: true }));
+app.post("/ping", (_req, res) => res.json({ ok: true }));
+app.get("/api/v1/progress/:id", (req, res) => {
+    const id = req.params.id;
+    let p = PROGRESS.get(id);
+    if (!p) {
+        const now = Date.now();
+        p = {
+            id,
+            total: 0,
+            done: 0,
+            percent: 0,
+            stage: "queued",
+            startedAt: now,
+            updatedAt: now,
+        };
+        PROGRESS.set(id, p);
+    }
+    res.json(p);
 });
 app.post("/api/v1/evaluate/positions", async (req, res) => {
     const progressId = String(req.query?.progressId ?? req.body?.progressId ?? "");
@@ -211,18 +266,8 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
             initProgress(progressId, fens.length || 0);
             setProgress(progressId, { stage: "queued" });
         }
-        const depthQ = Number(req.query?.depth);
-        const multiPvQ = Number(req.query?.multiPv);
-        const depth = Number.isFinite(body.depth)
-            ? Number(body.depth)
-            : Number.isFinite(depthQ)
-                ? depthQ
-                : DEFAULT_DEPTH;
-        const multiPv = Number.isFinite(body.multiPv)
-            ? Number(body.multiPv)
-            : Number.isFinite(multiPvQ)
-                ? multiPvQ
-                : DEFAULT_MULTIPV;
+        const depth = Number.isFinite(body.depth) ? Number(body.depth) : DEFAULT_DEPTH;
+        const multiPv = Number.isFinite(body.multiPv) ? Number(body.multiPv) : DEFAULT_MULTIPV;
         if (!Array.isArray(fens) || fens.length < 1) {
             if (progressId)
                 setProgress(progressId, { stage: "done" });
@@ -240,23 +285,23 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         const result = await jobQueue.enqueue(async () => {
             if (progressId)
                 setProgress(progressId, { stage: "evaluating", done: 0 });
-            const out = await evaluateGameParallel(baseParams, Number(body.workersNb ?? 0), (p) => {
+            const out = await evaluateGameParallel(baseParams, Number(body.workersNb ?? 0), progressId || null, (p) => {
                 if (progressId) {
-                    const done = Math.max(0, Math.min(fens.length, Math.round((p / 100) * fens.length)));
-                    const currentFen = done > 0 && done <= fens.length ? fens[done - 1] : undefined;
-                    const currentUci = done > 0 && done <= uciMoves.length ? uciMoves[done - 1] : undefined;
+                    const done = Math.floor((p / 100) * fens.length);
                     setProgress(progressId, {
-                        done,
-                        stage: "evaluating",
-                        fen: currentFen,
-                        currentUci: currentUci
+                        done: Math.min(done, fens.length),
+                        stage: "evaluating"
                     });
                 }
             });
             if (progressId)
                 setProgress(progressId, { stage: "done", done: fens.length });
+            const positions = fens.map((fen, idx) => {
+                const posAny = out.positions[idx] ?? {};
+                return toClientPosition(posAny, fen, idx);
+            });
             return {
-                positions: out.positions,
+                positions,
                 settings: {
                     engine: out?.settings?.engine ?? "stockfish-native",
                     depth: out?.settings?.depth ?? depth,
@@ -269,8 +314,34 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
     catch (e) {
         if (progressId)
             setProgress(progressId, { stage: "done" });
+        log.error({ err: e }, "Evaluation failed");
         return res.status(500).json({
             error: "evaluate_positions_failed",
+            details: String(e?.message ?? e),
+        });
+    }
+});
+app.post("/api/v1/evaluate/position", async (req, res) => {
+    try {
+        const { fen, depth, multiPv, useNNUE, elo, skillLevel } = req.body ?? {};
+        if (!fen || typeof fen !== "string") {
+            return res.status(400).json({ error: "fen_required" });
+        }
+        const engine = await getSingletonEngine();
+        const params = {
+            fen,
+            depth: Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH,
+            multiPv: Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV,
+            useNNUE,
+            elo,
+            ...(skillLevel !== undefined ? { skillLevel } : {}),
+        };
+        const finalEval = await engine.evaluatePositionWithUpdate(params);
+        return res.json(finalEval);
+    }
+    catch (e) {
+        return res.status(500).json({
+            error: "evaluate_position_failed",
             details: String(e?.message ?? e),
         });
     }
@@ -281,6 +352,11 @@ app.use((req, res) => {
         .json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
 });
 app.listen(PORT, () => {
-    log.info(`Server http://localhost:${PORT}`);
+    log.info({
+        port: PORT,
+        threads: ENGINE_THREADS,
+        hashMB: ENGINE_HASH_MB,
+        maxWorkers: ENGINE_WORKERS_MAX
+    }, "Server started");
 });
 //# sourceMappingURL=server.js.map
