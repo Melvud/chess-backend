@@ -1,6 +1,9 @@
 bin/*
 !bin/.keep
 
+# Build output
+dist/
+
 # Dependencies
 node_modules/
 
