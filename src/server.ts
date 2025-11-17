@@ -148,6 +148,47 @@ type EngineIface = {
 
 let singletonEngine: EngineIface | null = null;
 
+// -------------------- Worker Pool (для устранения задержки) --------------------
+const workerPool: EngineIface[] = [];
+let workerPoolReady = false;
+
+/** Инициализирует пул воркеров при старте сервера (устраняет задержку 15-20 сек) */
+async function initializeWorkerPool() {
+  if (workerPoolReady) return;
+
+  const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / ENGINE_WORKERS_MAX));
+  const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / ENGINE_WORKERS_MAX));
+
+  log.info({ workers: ENGINE_WORKERS_MAX, threadsPerWorker: threadsPer, hashPerWorker: hashPer },
+    "🔥 Initializing worker pool...");
+
+  const tasks = [];
+  for (let i = 0; i < ENGINE_WORKERS_MAX; i++) {
+    tasks.push(
+      createEngineInstance({
+        threads: threadsPer,
+        hashMb: hashPer,
+        multiPv: DEFAULT_MULTIPV,
+      }).then(async (eng) => {
+        // Прогрев воркера через простую оценку
+        await eng.evaluatePositionWithUpdate({
+          fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+          depth: 8,
+          multiPv: 1,
+        } as any);
+        log.info({ worker: i }, "Worker warmed up");
+        return eng;
+      })
+    );
+  }
+
+  const workers = await Promise.all(tasks);
+  workerPool.push(...workers);
+  workerPoolReady = true;
+
+  log.info({ count: workerPool.length }, "✅ Worker pool ready (analysis will start instantly)");
+}
+
 async function createEngineInstance(opts?: {
   threads?: number;
   hashMb?: number;
@@ -268,11 +309,18 @@ async function evaluateGameParallel(
     const shardFens = idxs.map((i) => baseParams.fens![i]);
     const shardUci = idxs.map((i) => baseParams.uciMoves![i]);
 
-    const eng = await createEngineInstance({
-      threads: threadsPer,
-      hashMb: hashPer,
-      multiPv: multiPvPer,
-    });
+    // ✅ ОПТИМИЗАЦИЯ: Используем прогретые воркеры из пула если доступны
+    let eng: EngineIface;
+    if (workerPoolReady && wi < workerPool.length) {
+      eng = workerPool[wi];
+      log.debug({ worker: wi }, "Using prewarmed worker from pool");
+    } else {
+      eng = await createEngineInstance({
+        threads: threadsPer,
+        hashMb: hashPer,
+        multiPv: multiPvPer,
+      });
+    }
 
     const onShardProgress = (p: number) => {
       const shardDone = Math.round((p / 100) * shardFens.length);
@@ -308,14 +356,18 @@ async function evaluateGameParallel(
 
   const shards = await Promise.all(tasks);
 
+  // ✅ ОПТИМИЗАЦИЯ: НЕ закрываем воркеры из пула (переиспользуем их)
   await Promise.allSettled(
-    shards.map(async (shard) => {
+    shards.map(async (shard, idx) => {
       return new Promise<void>((resolve) => {
         setTimeout(() => {
           try {
             const worker = (shard as any)?.__engine;
-            if (worker && typeof worker.shutdown === "function") {
+            // Закрываем только воркеры, которые НЕ из пула
+            const isPoolWorker = workerPoolReady && idx < workerPool.length && worker === workerPool[idx];
+            if (worker && typeof worker.shutdown === "function" && !isPoolWorker) {
               worker.shutdown();
+              log.debug({ worker: idx }, "Shutting down temporary worker");
             }
           } catch (e) {
             log.warn({ err: String(e) }, "Worker shutdown warning");
@@ -679,10 +731,12 @@ app.use((req, res) => {
     .json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
 });
 
-// ✅ Прогрев движка при старте (убирает задержку первого запроса)
+// ✅ Прогрев движков при старте (убирает задержку 15-20 сек при анализе)
 (async () => {
   try {
-    log.info("🔥 Warming up engine...");
+    log.info("🔥 Warming up engines...");
+
+    // Прогреваем singleton движок для одиночных запросов
     const warmupEngine = await createEngineInstance({
       threads: ENGINE_THREADS,
       hashMb: ENGINE_HASH_MB,
@@ -695,8 +749,13 @@ app.use((req, res) => {
       multiPv: 1,
     } as any);
 
-    log.info("✅ Engine warmed up and ready");
+    log.info("✅ Singleton engine warmed up");
     singletonEngine = warmupEngine;
+
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Прогреваем пул воркеров для параллельного анализа
+    // Это устраняет задержку 15-20 секунд при выборе партии!
+    await initializeWorkerPool();
+
   } catch (e) {
     log.warn({ err: e }, "⚠️  Engine warmup failed, will initialize on first request");
   }
