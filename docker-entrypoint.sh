@@ -2,13 +2,18 @@
 set -e
 
 # Устанавливаем права на выполнение для Stockfish при каждом запуске
-if [ -f /app/bin/stockfish ]; then
-  echo "Setting execute permissions for Stockfish..."
-  chmod +x /app/bin/stockfish
-  ls -la /app/bin/stockfish
-else
-  echo "WARNING: Stockfish binary not found at /app/bin/stockfish"
+echo "Setting executable permissions for Stockfish..."
+chmod +x /app/bin/stockfish
+
+# Проверяем, что файл существует и executable
+if [ ! -x /app/bin/stockfish ]; then
+    echo "ERROR: Stockfish binary is not executable!"
+    ls -la /app/bin/stockfish
+    exit 1
 fi
+
+echo "Stockfish is ready!"
+ls -la /app/bin/stockfish
 
 # Запускаем основную команду
 exec "$@"

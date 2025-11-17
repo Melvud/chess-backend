@@ -2,9 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getMovesClassification = void 0;
 const winPercentage_1 = require("./winPercentage");
-const enums_1 = require("../../../types/enums");
-const openings_1 = require("../../../data/openings");
-const chess_1 = require("../../chess");
+const enums_1 = require("@/types/enums");
+const openings_1 = require("@/data/openings");
+const chess_1 = require("@/lib/chess");
 const getMovesClassification = (rawPositions, uciMoves, fens) => {
     const positionsWinPercentage = rawPositions.map(winPercentage_1.getPositionWinPercentage);
     let currentOpening = undefined;

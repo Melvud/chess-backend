@@ -408,14 +408,29 @@ export class UciEngine {
   }
 
   /** Полностью завершить работу движка */
-  shutdown() {
-    const p = this.currentProc;
-    if (p) {
-      try { p.stdin.end("quit\n"); } catch {}
-      try { p.kill("SIGKILL"); } catch {}
-      this.currentProc = null;
-    }
+shutdown() {
+  const p = this.currentProc;
+  if (p) {
+    try { 
+      // Не пытаемся писать quit если процесс уже закрывается
+      if (!p.killed && p.stdin.writable) {
+        p.stdin.write("quit\n");
+      }
+      p.stdin.end(); 
+    } catch {}
+    
+    // Даем время на graceful shutdown
+    setTimeout(() => {
+      try { 
+        if (!p.killed) {
+          p.kill("SIGTERM"); 
+        }
+      } catch {}
+    }, 100);
+    
+    this.currentProc = null;
   }
+}
 }
 
 // ────────────────────────────────────────────────────────────────────
