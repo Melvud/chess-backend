@@ -11,8 +11,8 @@ const node_os_1 = __importDefault(require("node:os"));
 const pino_1 = __importDefault(require("pino"));
 const pino_http_1 = __importDefault(require("pino-http"));
 const chess_js_1 = require("chess.js");
-const enums_1 = require("@/types/enums");
-const uciEngine_1 = require("@/lib/engine/uciEngine");
+const enums_1 = require("./types/enums");
+const uciEngine_1 = require("./lib/engine/uciEngine");
 const PORT = Number(process.env.PORT ?? 8080);
 const ENGINE_NAME = process.env.ENGINE_NAME ?? enums_1.EngineName.Stockfish17Lite;
 const DEFAULT_DEPTH = Number(process.env.ENGINE_DEPTH ?? 16);
@@ -218,34 +218,6 @@ async function evaluateGameParallel(baseParams, workersRequested, progressId, on
     const elapsed = Date.now() - startTime;
     log.info({ elapsed, msPerMove: Math.round(elapsed / total), workers }, "Parallel evaluation complete");
     return { positions: positionsMerged, settings };
-}
-function normalizeEvalToWhitePOV(rawLine, fen) {
-    const whiteToPlay = fen.split(" ")[1] === "w";
-    let cp = typeof rawLine?.cp === "number" ? rawLine.cp : undefined;
-    let mate = typeof rawLine?.mate === "number" ? rawLine.mate : undefined;
-    if (!whiteToPlay) {
-        if (cp !== undefined)
-            cp = -cp;
-        if (mate !== undefined) {
-            if (mate === 0) {
-                mate = 1;
-            }
-            else {
-                mate = -mate;
-            }
-        }
-    }
-    else {
-        if (mate === 0) {
-            mate = -1;
-        }
-    }
-    const pv = Array.isArray(rawLine?.pv)
-        ? rawLine.pv
-        : Array.isArray(rawLine?.pv?.moves)
-            ? rawLine.pv.moves
-            : [];
-    return { cp, mate, pv };
 }
 function toClientPosition(posAny, fen, idx, isLastPosition, gameResult) {
     const rawLines = Array.isArray(posAny?.lines) ? posAny.lines : [];
