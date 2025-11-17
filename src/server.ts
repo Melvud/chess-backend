@@ -700,30 +700,31 @@ app.use((req, res) => {
   } catch (e) {
     log.warn({ err: e }, "⚠️  Engine warmup failed, will initialize on first request");
   }
+
+  // ✅ ИСПРАВЛЕНИЕ: Запускаем сервер только после прогрева движка
+  app.listen(PORT, () => {
+    log.info(
+      {
+        port: PORT,
+        threads: ENGINE_THREADS,
+        hashMB: ENGINE_HASH_MB,
+        maxWorkers: ENGINE_WORKERS_MAX,
+        concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
+      },
+      "🚀 Server started"
+    );
+  });
+
+  // ✅ Keep-alive для Railway (предотвращает "засыпание")
+  if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
+    const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 минут
+
+    setInterval(() => {
+      fetch(`http://localhost:${PORT}/health`)
+        .then(() => log.debug("Keep-alive ping successful"))
+        .catch((e) => log.warn({ err: String(e) }, "Keep-alive ping failed"));
+    }, KEEP_ALIVE_INTERVAL);
+
+    log.info("💚 Keep-alive enabled (Railway optimization)");
+  }
 })();
-
-app.listen(PORT, () => {
-  log.info(
-    {
-      port: PORT,
-      threads: ENGINE_THREADS,
-      hashMB: ENGINE_HASH_MB,
-      maxWorkers: ENGINE_WORKERS_MAX,
-      concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
-    },
-    "🚀 Server started"
-  );
-});
-
-// ✅ Keep-alive для Railway (предотвращает "засыпание")
-if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
-  const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 минут
-
-  setInterval(() => {
-    fetch(`http://localhost:${PORT}/health`)
-      .then(() => log.debug("Keep-alive ping successful"))
-      .catch((e) => log.warn({ err: String(e) }, "Keep-alive ping failed"));
-  }, KEEP_ALIVE_INTERVAL);
-
-  log.info("💚 Keep-alive enabled (Railway optimization)");
-}

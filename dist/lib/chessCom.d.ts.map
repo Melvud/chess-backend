@@ -1,1 +1,0 @@
-{"version":3,"file":"chessCom.d.ts","sourceRoot":"","sources":["../../src/lib/chessCom.ts"],"names":[],"mappings":"AAGA,OAAO,EAAE,UAAU,EAAE,MAAM,cAAc,CAAC;AAE1C,eAAO,MAAM,0BAA0B,GACrC,UAAU,MAAM,EAChB,SAAS,WAAW,KACnB,OAAO,CAAC,UAAU,EAAE,CA2CtB,CAAC;AAEF,eAAO,MAAM,qBAAqB,GAChC,UAAU,MAAM,KACf,OAAO,CAAC,MAAM,GAAG,IAAI,CAQvB,CAAC"}
