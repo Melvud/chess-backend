@@ -1,6 +1,6 @@
 // src/server.ts
 // Сервер ТОЛЬКО для оценки позиций движком Stockfish
-// Анализ производится на клиенте (LocalGameAnalyzer.kt)
+// Весь анализ (классификация, ACPL, точность) производится на клиенте (LocalGameAnalyzer.kt)
 // ОПТИМИЗИРОВАНО для 8 vCPU и 8 GB RAM
 
 import "dotenv/config";
@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import pino from "pino";
 import pinoHttp from "pino-http";
+import { Chess } from "chess.js";
 
 import { EngineName } from "@/types/enums";
 import type {
@@ -29,22 +30,22 @@ const DEFAULT_MULTIPV = Number(process.env.ENGINE_MULTIPV ?? 3);
 
 const CPU_CORES = Math.max(1, os.cpus()?.length ?? 1);
 
-// ✅ ОПТИМИЗАЦИЯ: Используем все 8 ядер
+// ✅ Используем все 8 ядер
 const ENGINE_THREADS = Math.max(
   1,
   Number(process.env.ENGINE_THREADS ?? Math.min(8, CPU_CORES)),
 );
 
-// ✅ ОПТИМИЗАЦИЯ: 2 GB Hash для одного процесса
+// ✅ 2 GB Hash для одного процесса
 const ENGINE_HASH_MB = Math.max(16, Number(process.env.ENGINE_HASH_MB ?? 2048));
 
-// ✅ ОПТИМИЗАЦИЯ: Максимум 4 воркера для параллельной обработки (8 vCPU / 2)
+// ✅ Максимум 4 воркера для параллельной обработки (8 vCPU / 2)
 const ENGINE_WORKERS_MAX = Math.max(
   1,
   Number(process.env.ENGINE_WORKERS_MAX ?? Math.min(4, Math.floor(CPU_CORES / 2))),
 );
 
-// ✅ ОПТИМИЗАЦИЯ: 2 одновременных задачи (для баланса скорости и памяти)
+// ✅ 2 одновременных задачи (для баланса скорости и памяти)
 const ENGINE_MAX_CONCURRENT_JOBS = Math.max(
   1,
   Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? 2),
@@ -163,7 +164,9 @@ async function createEngineInstance(opts?: {
       await (eng as any).setOption("Ponder", false);
       await (eng as any).setOption("MultiPV", multiPv);
     }
-  } catch {}
+  } catch (e) {
+    log.warn({ err: e }, "Engine option setup warning");
+  }
   return eng;
 }
 
@@ -222,7 +225,7 @@ async function evaluateGameParallel(
   const startTime = Date.now();
   const requested = Number(workersRequested);
   
-  // ✅ ОПТИМИЗАЦИЯ: Адаптивное количество воркеров
+  // ✅ Адаптивное количество воркеров
   let workers: number;
   if (total <= 20) {
     workers = 1; // Малые партии - один процесс с теплым кэшем
@@ -302,23 +305,24 @@ async function evaluateGameParallel(
       __idx: idxs[k],
       ...pos,
     }));
-    return { ...out, positions: positionsWithIdx };
+    
+    return { ...out, positions: positionsWithIdx, __engine: eng };
   });
 
   const shards = await Promise.all(tasks);
 
-  // ✅ ИСПРАВЛЕНО: Безопасное закрытие воркеров
+  // ✅ Безопасное закрытие воркеров
   await Promise.allSettled(
-    tasks.map(async (_, wi) => {
+    shards.map(async (shard) => {
       return new Promise<void>((resolve) => {
         setTimeout(() => {
           try {
-            const worker = (shards[wi] as any)?.__engine;
+            const worker = (shard as any)?.__engine;
             if (worker && typeof worker.shutdown === "function") {
               worker.shutdown();
             }
           } catch (e) {
-            log.warn({ err: String(e), worker: wi }, "Worker shutdown warning");
+            log.warn({ err: String(e) }, "Worker shutdown warning");
           }
           resolve();
         }, 50);
@@ -327,10 +331,11 @@ async function evaluateGameParallel(
   );
 
   const positionsMerged: any[] = new Array(total);
-  for (const s of shards)
+  for (const s of shards) {
     for (const p of s.positions as any[]) {
       positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
     }
+  }
     
   const first = shards.find(
     (s) => Array.isArray(s.positions) && s.positions.length > 0,
@@ -343,31 +348,83 @@ async function evaluateGameParallel(
   return { positions: positionsMerged, settings } as any as GameEval;
 }
 
+// -------------------- Helper: Нормализация к перспективе белых --------------------
+/**
+ * ✅ КРИТИЧЕСКИ ВАЖНО: Stockfish возвращает оценку с точки зрения стороны, которая ходит.
+ * Мы нормализуем все к перспективе белых: + = белые лучше, - = чёрные лучше
+ */
+function normalizeEvalToWhitePOV(
+  rawLine: any,
+  fen: string
+): { cp?: number; mate?: number; pv: string[] } {
+  const whiteToPlay = fen.split(" ")[1] === "w";
+  
+  let cp = typeof rawLine?.cp === "number" ? rawLine.cp : undefined;
+  let mate = typeof rawLine?.mate === "number" ? rawLine.mate : undefined;
+  
+  // ✅ Если ход чёрных, инвертируем оценку
+  if (!whiteToPlay) {
+    if (cp !== undefined) cp = -cp;
+    if (mate !== undefined) {
+      // Специальная обработка mate: 0 (текущая сторона заматована)
+      if (mate === 0) {
+        mate = 1; // Чёрные заматованы → белые выиграли
+      } else {
+        mate = -mate;
+      }
+    }
+  } else {
+    // Если ход белых и mate: 0, значит белые заматованы
+    if (mate === 0) {
+      mate = -1;
+    }
+  }
+  
+  const pv: string[] = Array.isArray(rawLine?.pv)
+    ? rawLine.pv
+    : Array.isArray(rawLine?.pv?.moves)
+    ? rawLine.pv.moves
+    : [];
+  
+  return { cp, mate, pv };
+}
+
 // -------------------- Helper: Convert to client format --------------------
 function toClientPosition(
   posAny: any,
   fen: string,
   idx: number,
+  isLastPosition: boolean,
+  gameResult?: string
 ): ClientPosition {
   const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
   
+  // ✅ Нормализуем каждую линию к перспективе белых
   const lines: ClientLine[] = rawLines.map((l: any) => {
-    const pv: string[] = Array.isArray(l?.pv)
-      ? l.pv
-      : Array.isArray(l?.pv?.moves)
-      ? l.pv.moves
-      : [];
-    const cpVal = typeof l?.cp === "number" ? l.cp : undefined;
-    const mateVal = typeof l?.mate === "number" ? l.mate : undefined;
-    return { pv, cp: cpVal, mate: mateVal };
+    const normalized = normalizeEvalToWhitePOV(l, fen);
+    return {
+      pv: normalized.pv,
+      cp: normalized.cp,
+      mate: normalized.mate,
+    };
   });
 
-  // Fallback для пустых линий
+  // ✅ Fallback для пустых линий или мата
   if (lines.length === 0) {
-    lines.push({ pv: [], cp: 0 });
+    if (isLastPosition && gameResult) {
+      if (gameResult === "1-0") {
+        lines.push({ pv: [], mate: 1 }); // Белые победили
+      } else if (gameResult === "0-1") {
+        lines.push({ pv: [], mate: -1 }); // Чёрные победили
+      } else {
+        lines.push({ pv: [], cp: 0 }); // Ничья
+      }
+    } else {
+      lines.push({ pv: [], cp: 0 });
+    }
   }
 
-  // Best move из первой линии
+  // ✅ Best move из первой линии
   const firstPv = lines[0]?.pv;
   const best =
     (posAny as any)?.bestMove ??
@@ -411,7 +468,7 @@ app.get("/api/v1/progress/:id", (req, res) => {
 
 /**
  * ✅ ОСНОВНОЙ ENDPOINT: Оценка позиций БЕЗ анализа
- * Клиент получает только cp/mate и делает анализ через LocalGameAnalyzer
+ * Клиент получает только нормализованные cp/mate и делает весь анализ через LocalGameAnalyzer
  */
 app.post("/api/v1/evaluate/positions", async (req, res) => {
   const progressId = String(
@@ -422,6 +479,7 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
     const body = req.body ?? {};
     const fens = Array.isArray(body.fens) ? body.fens : [];
     const uciMoves = Array.isArray(body.uciMoves) ? body.uciMoves : [];
+    const gameResult = typeof body.gameResult === "string" ? body.gameResult : undefined;
 
     if (progressId) {
       initProgress(progressId, fens.length || 0);
@@ -447,8 +505,9 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
     } as any;
 
     const result = await jobQueue.enqueue(async () => {
-      if (progressId)
+      if (progressId) {
         setProgress(progressId, { stage: "evaluating" as ProgressStage, done: 0 });
+      }
 
       const out: GameEval = await evaluateGameParallel(
         baseParams,
@@ -465,13 +524,15 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         },
       );
 
-      if (progressId)
+      if (progressId) {
         setProgress(progressId, { stage: "done" as ProgressStage, done: fens.length });
+      }
 
-      // ✅ Возвращаем ТОЛЬКО позиции (cp/mate), БЕЗ анализа
+      // ✅ Возвращаем ТОЛЬКО позиции с нормализованными cp/mate, БЕЗ анализа
       const positions: ClientPosition[] = fens.map((fen: string, idx: number) => {
         const posAny: any = (out.positions as any[])[idx] ?? {};
-        return toClientPosition(posAny, fen, idx);
+        const isLast = idx === fens.length - 1;
+        return toClientPosition(posAny, fen, idx, isLast, gameResult);
       });
 
       return {
@@ -496,12 +557,129 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
 });
 
 /**
- * Оценка одной позиции (для real-time анализа)
+ * ✅ Оценка одной позиции (для real-time анализа в GameReportScreen)
  */
 app.post("/api/v1/evaluate/position", async (req, res) => {
   try {
-    const { fen, depth, multiPv, useNNUE, elo, skillLevel } = req.body ?? {};
+    const {
+      fen,
+      depth,
+      multiPv,
+      useNNUE,
+      elo,
+      skillLevel,
+      beforeFen,
+      afterFen,
+      uciMove,
+    } = req.body ?? {};
 
+    // ✅ РЕЖИМ: анализ ОДНОГО хода (для real-time)
+    if (
+      typeof beforeFen === "string" &&
+      typeof afterFen === "string" &&
+      typeof uciMove === "string"
+    ) {
+      const effDepth = Number.isFinite(depth) ? Number(depth) : DEFAULT_DEPTH;
+      const effMultiPv = Number.isFinite(multiPv) ? Number(multiPv) : DEFAULT_MULTIPV;
+
+      const baseParams: EvaluateGameParams = {
+        fens: [String(beforeFen), String(afterFen)],
+        uciMoves: [String(uciMove)],
+        depth: effDepth,
+        multiPv: effMultiPv,
+        ...(useNNUE !== undefined ? { useNNUE } : {}),
+        ...(elo !== undefined ? { elo } : {}),
+        ...(skillLevel !== undefined ? { skillLevel } : {}),
+      } as any;
+
+      const out: GameEval = await evaluateGameParallel(baseParams, 1, null);
+
+      const rawPositions: any[] = Array.isArray((out as any)?.positions)
+        ? (out as any).positions
+        : [];
+
+      const fens2 = [String(beforeFen), String(afterFen)];
+      const positions: ClientPosition[] = fens2.map((fenStr: string, idx: number) => {
+        const posAny: any = rawPositions[idx] ?? {};
+        return toClientPosition(posAny, fenStr, idx, idx === 1);
+      });
+
+      // ✅ Проверка на мат с использованием chess.js
+      try {
+        const ch = new Chess();
+        ch.load(String(beforeFen));
+        const from = String(uciMove).slice(0, 2);
+        const to = String(uciMove).slice(2, 4);
+        const prom = String(uciMove).slice(4) || undefined;
+        const mv = ch.move({ from, to, promotion: prom as any });
+
+        if (mv && ch.isCheckmate && ch.isCheckmate()) {
+          const moverIsWhite = String(beforeFen).includes(" w ");
+          const mateVal = moverIsWhite ? +1 : -1;
+
+          if (positions[1].lines.length === 0) {
+            positions[1].lines.push({ pv: [], mate: mateVal });
+          } else {
+            positions[1].lines[0] = {
+              ...(positions[1].lines[0] || {}),
+              mate: mateVal,
+            };
+            delete (positions[1].lines[0] as any).cp;
+          }
+
+          log.info({ moverIsWhite, mateVal }, "Checkmate detected");
+        }
+      } catch (e) {
+        log.warn({ err: e }, "Checkmate detection failed");
+      }
+
+      // ✅ Если нет best для позиции "до" - запрашиваем
+      const needBestFix =
+        !positions[0]?.lines?.[0]?.best ||
+        String(positions[0].lines[0].best).trim() === "";
+
+      if (needBestFix) {
+        try {
+          const engine = await getSingletonEngine();
+          const eval0 = await engine.evaluatePositionWithUpdate({
+            fen: String(beforeFen),
+            depth: effDepth,
+            multiPv: effMultiPv,
+            useNNUE,
+            elo,
+            ...(skillLevel !== undefined ? { skillLevel } : {}),
+          } as any);
+          
+          const rawTop = Array.isArray(eval0?.lines) ? eval0.lines[0] : undefined;
+          const bestFromEngine: string =
+            (eval0 as any)?.bestMove ??
+            (Array.isArray(rawTop?.pv) ? rawTop.pv[0] : undefined) ??
+            "";
+
+          if (bestFromEngine) {
+            positions[0].lines[0].best = String(bestFromEngine);
+            if (!Array.isArray(positions[0].lines[0].pv) || positions[0].lines[0].pv.length === 0) {
+              positions[0].lines[0].pv = [String(bestFromEngine)];
+            }
+          }
+        } catch (e) {
+          log.warn({ err: e }, "Best move retrieval failed");
+        }
+      }
+
+      const bestFromBefore = String(
+        positions[0]?.lines?.[0]?.best ??
+        positions[0]?.lines?.[0]?.pv?.[0] ??
+        "",
+      ) || undefined;
+
+      return res.json({
+        lines: positions[1].lines,
+        bestMove: bestFromBefore,
+      });
+    }
+
+    // ✅ РЕЖИМ: оценка обычной позиции
     if (!fen || typeof fen !== "string") {
       return res.status(400).json({ error: "fen_required" });
     }
@@ -516,9 +694,26 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       ...(skillLevel !== undefined ? { skillLevel } : {}),
     } as any;
 
-    const finalEval = await engine.evaluatePositionWithUpdate(params);
-    return res.json(finalEval);
+    const rawEval = await engine.evaluatePositionWithUpdate(params);
+    
+    // ✅ Нормализуем результат к перспективе белых
+    const normalizedLines = Array.isArray(rawEval?.lines)
+      ? rawEval.lines.map((line: any) => {
+          const normalized = normalizeEvalToWhitePOV(line, fen);
+          return {
+            pv: normalized.pv,
+            cp: normalized.cp,
+            mate: normalized.mate,
+          };
+        })
+      : [];
+
+    return res.json({
+      lines: normalizedLines,
+      bestMove: (rawEval as any)?.bestMove,
+    });
   } catch (e: any) {
+    log.error({ err: e }, "Position evaluation failed");
     return res.status(500).json({
       error: "evaluate_position_failed",
       details: String(e?.message ?? e),
@@ -532,7 +727,7 @@ app.use((req, res) => {
     .json({ error: "not_found", path: `${req.method} ${req.originalUrl}` });
 });
 
-// ✅ ОПТИМИЗАЦИЯ: Прогрев движка при старте (убирает задержку)
+// ✅ Прогрев движка при старте (убирает задержку первого запроса)
 (async () => {
   try {
     log.info("🔥 Warming up engine...");
@@ -541,16 +736,16 @@ app.use((req, res) => {
       hashMb: ENGINE_HASH_MB,
       multiPv: 1,
     });
-    
+
     // Оцениваем стартовую позицию для инициализации
     await warmupEngine.evaluatePositionWithUpdate({
       fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
       depth: 10,
       multiPv: 1,
     } as any);
-    
+
     log.info("✅ Engine warmed up and ready");
-    
+
     // Сохраняем как singleton
     singletonEngine = warmupEngine;
   } catch (e) {
@@ -559,24 +754,27 @@ app.use((req, res) => {
 })();
 
 app.listen(PORT, () => {
-  log.info({ 
-    port: PORT, 
-    threads: ENGINE_THREADS, 
-    hashMB: ENGINE_HASH_MB, 
-    maxWorkers: ENGINE_WORKERS_MAX 
-  }, "🚀 Server started");
+  log.info(
+    {
+      port: PORT,
+      threads: ENGINE_THREADS,
+      hashMB: ENGINE_HASH_MB,
+      maxWorkers: ENGINE_WORKERS_MAX,
+      concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
+    },
+    "🚀 Server started"
+  );
 });
 
-// ✅ ОПТИМИЗАЦИЯ: Keep-alive для Railway (предотвращает "засыпание")
+// ✅ Keep-alive для Railway (предотвращает "засыпание")
 if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
   const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000; // 5 минут
-  
+
   setInterval(() => {
-    // Простой GET запрос к собственному /health
     fetch(`http://localhost:${PORT}/health`)
       .then(() => log.debug("Keep-alive ping successful"))
       .catch((e) => log.warn({ err: String(e) }, "Keep-alive ping failed"));
   }, KEEP_ALIVE_INTERVAL);
-  
+
   log.info("💚 Keep-alive enabled (Railway optimization)");
 }
