@@ -47,13 +47,31 @@ export const parseEvaluationResults = (
   parsedResults.lines = Object.values(tempResults).sort(sortLines);
 
   const whiteToPlay = fen.split(" ")[1] === "w";
-  if (!whiteToPlay) {
-    parsedResults.lines = parsedResults.lines.map((line) => ({
+
+  // Нормализация оценок к перспективе белых (positive = белые выигрывают)
+  parsedResults.lines = parsedResults.lines.map((line) => {
+    let normalizedCp = line.cp;
+    let normalizedMate = line.mate;
+
+    if (!whiteToPlay) {
+      // Ход черных - инвертируем знаки для перспективы белых
+      normalizedCp = line.cp !== undefined ? -line.cp : undefined;
+      normalizedMate = line.mate !== undefined
+        ? (line.mate === 0 ? 1 : -line.mate)  // mate:0 означает черные заматованы → +1 для белых
+        : undefined;
+    } else {
+      // Ход белых - обрабатываем особый случай mate:0
+      normalizedMate = line.mate !== undefined
+        ? (line.mate === 0 ? -1 : line.mate)  // mate:0 означает белые заматованы → -1
+        : undefined;
+    }
+
+    return {
       ...line,
-      cp: line.cp ? -line.cp : line.cp,
-      mate: line.mate ? -line.mate : line.mate,
-    }));
-  }
+      cp: normalizedCp,
+      mate: normalizedMate,
+    };
+  });
 
   return parsedResults;
 };

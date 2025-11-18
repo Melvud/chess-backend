@@ -18,13 +18,12 @@ export const getLineWinPercentage = (line: LineEval): number => {
 };
 
 const getWinPercentageFromMate = (mate: number): number => {
-  return mate > 0 ? 100 : 0;
+  return mate >= 0 ? 100 : 0;
 };
 
-// Source: https://github.com/lichess-org/lila/blob/a320a93b68dabee862b8093b1b2acdfe132b9966/modules/analyse/src/main/WinPercent.scala#L27
 const getWinPercentageFromCp = (cp: number): number => {
   const cpCeiled = ceilsNumber(cp, -1000, 1000);
-  const MULTIPLIER = -0.00368208; // Source : https://github.com/lichess-org/lila/pull/11148
+  const MULTIPLIER = -0.00368208;
   const winChances = 2 / (1 + Math.exp(MULTIPLIER * cpCeiled)) - 1;
   return 50 + 50 * winChances;
 };
