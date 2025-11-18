@@ -99,7 +99,6 @@ function setProgress(id: string, upd: Partial<Progress>) {
   PROGRESS.set(id, next);
 }
 
-// ✅ КРИТИЧНО: Возвращаем СЫРЫЕ данные движка (без нормализации!)
 interface ClientLine {
   pv: string[];
   cp?: number;
@@ -365,7 +364,6 @@ async function evaluateGameParallel(
   return { positions: positionsMerged, settings } as any as GameEval;
 }
 
-// ✅ КРИТИЧНО: Возвращаем СЫРЫЕ данные движка БЕЗ нормализации!
 function toClientPosition(
   posAny: any,
   fen: string,
@@ -375,7 +373,6 @@ function toClientPosition(
 ): ClientPosition {
   const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
   
-  // ✅ НЕ НОРМАЛИЗУЕМ! Отправляем cp и mate КАК ЕСТЬ из движка
   const lines: ClientLine[] = rawLines.map((l: any) => {
     const pv: string[] = Array.isArray(l?.pv)
       ? l.pv
@@ -385,18 +382,19 @@ function toClientPosition(
     
     return {
       pv: pv,
-      cp: typeof l?.cp === "number" ? l.cp : undefined,  // ✅ Сырое значение
-      mate: typeof l?.mate === "number" ? l.mate : undefined,  // ✅ Сырое значение
+      cp: typeof l?.cp === "number" ? l.cp : undefined,
+      mate: typeof l?.mate === "number" ? l.mate : undefined,
     };
   });
 
   if (lines.length === 0) {
     if (isLastPosition && gameResult) {
-      // ✅ Для финальной позиции тоже возвращаем сырые значения
       if (gameResult === "1-0") {
-        lines.push({ pv: [], mate: 0 });  // ✅ Stockfish вернет mate:0 для заматованной позиции
+        // Белые победили - мат для черных, с точки зрения белых это +1
+        lines.push({ pv: [], mate: 1 });
       } else if (gameResult === "0-1") {
-        lines.push({ pv: [], mate: 0 });  // ✅ Stockfish вернет mate:0 для заматованной позиции
+        // Черные победили - мат для белых, с точки зрения белых это -1
+        lines.push({ pv: [], mate: -1 });
       } else {
         lines.push({ pv: [], cp: 0 });
       }
@@ -503,7 +501,6 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         setProgress(progressId, { stage: "done" as ProgressStage, done: fens.length });
       }
 
-      // ✅ КРИТИЧНО: Возвращаем СЫРЫЕ данные движка (без нормализации)
       const positions: ClientPosition[] = fens.map((fen: string, idx: number) => {
         const posAny: any = (out.positions as any[])[idx] ?? {};
         const isLast = idx === fens.length - 1;
@@ -570,17 +567,17 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         : [];
 
       const fens2 = [String(beforeFen), String(afterFen)];
-      
-      // ✅ КРИТИЧНО: Возвращаем СЫРЫЕ данные БЕЗ нормализации
       const positions: ClientPosition[] = fens2.map((fenStr: string, idx: number) => {
         const posAny: any = rawPositions[idx] ?? {};
         return toClientPosition(posAny, fenStr, idx, idx === 1);
       });
 
-      // ✅ Определяем мат, но НЕ меняем знак (клиент сам нормализует)
       try {
         const ch = new Chess();
         ch.load(String(beforeFen));
+        
+        // Определяем, кто сделал ход (кто ходил в beforeFen)
+        const movedSide = ch.turn(); // 'w' или 'b'
         
         const from = String(uciMove).slice(0, 2);
         const to = String(uciMove).slice(2, 4);
@@ -588,18 +585,21 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         const mv = ch.move({ from, to, promotion: prom as any });
 
         if (mv && ch.isCheckmate && ch.isCheckmate()) {
-          // ✅ Stockfish ВСЕГДА вернет mate:0 для заматованной позиции
+          // Если белые поставили мат (movedSide === 'w'), то mate: 1 (для белых это +)
+          // Если черные поставили мат (movedSide === 'b'), то mate: -1 (для белых это -)
+          const mateValue = movedSide === 'w' ? 1 : -1;
+          
           if (positions[1].lines.length === 0) {
-            positions[1].lines.push({ pv: [], mate: 0 });
+            positions[1].lines.push({ pv: [], mate: mateValue });
           } else {
             positions[1].lines[0] = {
               ...(positions[1].lines[0] || {}),
-              mate: 0,  // ✅ Сырое значение от Stockfish
+              mate: mateValue,
             };
             delete (positions[1].lines[0] as any).cp;
           }
 
-          log.info("Checkmate detected, returning raw mate: 0");
+          log.info({ movedSide, mateValue }, `Checkmate detected, returning mate: ${mateValue}`);
         }
       } catch (e) {
         log.warn({ err: e }, "Checkmate detection failed");
@@ -644,7 +644,6 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         "",
       ) || undefined;
 
-      // ✅ Возвращаем СЫРЫЕ данные
       return res.json({
         lines: positions[1].lines,
         bestMove: bestFromBefore,
@@ -667,12 +666,11 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
 
     const rawEval = await engine.evaluatePositionWithUpdate(params);
     
-    // ✅ Возвращаем СЫРЫЕ данные движка
     const rawLines = Array.isArray(rawEval?.lines)
       ? rawEval.lines.map((line: any) => ({
           pv: line.pv,
-          cp: line.cp,  // ✅ Сырое значение
-          mate: line.mate,  // ✅ Сырое значение
+          cp: line.cp,
+          mate: line.mate,
         }))
       : [];
 
