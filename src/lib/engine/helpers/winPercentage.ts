@@ -18,7 +18,16 @@ export const getLineWinPercentage = (line: LineEval): number => {
 };
 
 const getWinPercentageFromMate = (mate: number): number => {
-  return mate >= 0 ? 100 : 0;
+  // КРИТИЧНО: mate должен быть > 0 или < 0, НЕ >= 0!
+  // mate > 0 = белые выигрывают (мат в пользу белых)
+  // mate < 0 = черные выигрывают (мат в пользу черных)
+  // mate === 0 = НЕ ДОЛЖНО существовать после нормализации
+  if (mate > 0) return 100;
+  if (mate < 0) return 0;
+  
+  // mate === 0 - ошибка, возвращаем 50% для безопасности
+  console.warn(`⚠️ WARNING: mate=0 detected! This should not happen after parseResults.ts normalization.`);
+  return 50;
 };
 
 const getWinPercentageFromCp = (cp: number): number => {
