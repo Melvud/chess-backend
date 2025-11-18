@@ -694,31 +694,7 @@ app.use((req, res) => {
 });
 
 (async () => {
-  try {
-    log.info("Warming up engines...");
-
-    const warmupEngine = await createEngineInstance({
-      threads: ENGINE_THREADS,
-      hashMb: ENGINE_HASH_MB,
-      multiPv: 1,
-      keepAlive: true,
-    });
-
-    await warmupEngine.evaluatePositionWithUpdate({
-      fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-      depth: 10,
-      multiPv: 1,
-    } as any);
-
-    log.info("Singleton engine warmed up");
-    singletonEngine = warmupEngine;
-
-    await initializeWorkerPool();
-
-  } catch (e) {
-    log.warn({ err: e }, "Engine warmup failed, will initialize on first request");
-  }
-
+  // КРИТИЧНО: Запускаем сервер СРАЗУ, чтобы healthcheck прошел
   app.listen(PORT, () => {
     log.info(
       {
@@ -728,9 +704,38 @@ app.use((req, res) => {
         maxWorkers: ENGINE_WORKERS_MAX,
         concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
       },
-      "Server started"
+      "Server started - warming up engines in background"
     );
   });
+
+  // Инициализируем движки В ФОНЕ (не блокируя запуск сервера)
+  (async () => {
+    try {
+      log.info("Warming up engines...");
+
+      const warmupEngine = await createEngineInstance({
+        threads: ENGINE_THREADS,
+        hashMb: ENGINE_HASH_MB,
+        multiPv: 1,
+        keepAlive: true,
+      });
+
+      await warmupEngine.evaluatePositionWithUpdate({
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        depth: 10,
+        multiPv: 1,
+      } as any);
+
+      log.info("Singleton engine warmed up");
+      singletonEngine = warmupEngine;
+
+      await initializeWorkerPool();
+      log.info("All engines ready");
+
+    } catch (e) {
+      log.warn({ err: e }, "Engine warmup failed, will initialize on first request");
+    }
+  })();
 
   if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
     const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
