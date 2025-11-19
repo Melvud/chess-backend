@@ -137,14 +137,85 @@ let singletonEngine: EngineIface | null = null;
 const workerPool: EngineIface[] = [];
 let workerPoolReady = false;
 
+// ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
+let lastActivityTime = Date.now();
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+let idleCheckInterval: NodeJS.Timeout | null = null;
+
+function updateActivity() {
+  lastActivityTime = Date.now();
+}
+
+function shutdownAllWorkers() {
+  if (workerPool.length === 0 && !singletonEngine) {
+    return;
+  }
+
+  log.info({
+    workers: workerPool.length,
+    hasSingleton: !!singletonEngine
+  }, "Shutting down idle workers to free resources");
+
+  // Shutdown worker pool
+  for (const worker of workerPool) {
+    try {
+      if (worker.shutdown) {
+        worker.shutdown();
+      }
+    } catch (e) {
+      log.warn({ err: String(e) }, "Error shutting down worker");
+    }
+  }
+  workerPool.length = 0;
+  workerPoolReady = false;
+
+  // Shutdown singleton engine
+  if (singletonEngine) {
+    try {
+      if (singletonEngine.shutdown) {
+        singletonEngine.shutdown();
+      }
+    } catch (e) {
+      log.warn({ err: String(e) }, "Error shutting down singleton engine");
+    }
+    singletonEngine = null;
+  }
+
+  log.info("All workers shut down successfully");
+}
+
+function startIdleMonitoring() {
+  if (idleCheckInterval) {
+    return;
+  }
+
+  idleCheckInterval = setInterval(() => {
+    const idleTime = Date.now() - lastActivityTime;
+
+    if (idleTime > IDLE_TIMEOUT_MS) {
+      log.info({
+        idleMinutes: Math.round(idleTime / 60000)
+      }, "Server idle threshold reached");
+
+      shutdownAllWorkers();
+    }
+  }, 60000); // Check every minute
+
+  log.info({ timeoutMinutes: IDLE_TIMEOUT_MS / 60000 }, "Idle monitoring started");
+}
+
 async function initializeWorkerPool() {
   if (workerPoolReady) return;
 
   const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / ENGINE_WORKERS_MAX));
   const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / ENGINE_WORKERS_MAX));
 
-  log.info({ workers: ENGINE_WORKERS_MAX, threadsPerWorker: threadsPer, hashPerWorker: hashPer },
-    "Initializing worker pool...");
+  log.info({
+    workers: ENGINE_WORKERS_MAX,
+    threadsPerWorker: threadsPer,
+    hashPerWorker: hashPer,
+    lazyInit: true
+  }, "Initializing worker pool on demand...");
 
   const tasks = [];
   for (let i = 0; i < ENGINE_WORKERS_MAX; i++) {
@@ -186,12 +257,17 @@ async function createEngineInstance(opts?: {
 
 async function getSingletonEngine(): Promise<EngineIface> {
   if (singletonEngine) return singletonEngine;
+
+  log.info({ lazyInit: true }, "Initializing singleton engine on demand");
+
   singletonEngine = await createEngineInstance({
     threads: ENGINE_THREADS,
     hashMb: ENGINE_HASH_MB,
     multiPv: DEFAULT_MULTIPV,
     keepAlive: true,
   });
+
+  log.info("Singleton engine initialized");
   return singletonEngine;
 }
 
@@ -257,6 +333,11 @@ async function evaluateGameParallel(
     const elapsed = Date.now() - startTime;
     log.info({ elapsed, msPerMove: Math.round(elapsed / total) }, "Evaluation complete");
     return result;
+  }
+
+  // ✅ Initialize worker pool on demand if needed
+  if (!workerPoolReady) {
+    await initializeWorkerPool();
   }
 
   const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / workers));
@@ -480,6 +561,8 @@ app.get("/api/v1/progress/:id", (req, res) => {
 });
 
 app.post("/api/v1/evaluate/positions", async (req, res) => {
+  updateActivity(); // Track activity for idle monitoring
+
   const progressId = String(
     (req.query as any)?.progressId ?? req.body?.progressId ?? "",
   );
@@ -565,6 +648,8 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
 });
 
 app.post("/api/v1/evaluate/position", async (req, res) => {
+  updateActivity(); // Track activity for idle monitoring
+
   try {
     const {
       fen,
@@ -740,48 +825,21 @@ app.use((req, res) => {
         hashMB: ENGINE_HASH_MB,
         maxWorkers: ENGINE_WORKERS_MAX,
         concurrentJobs: ENGINE_MAX_CONCURRENT_JOBS,
+        idleTimeoutMinutes: IDLE_TIMEOUT_MS / 60000,
       },
-      "Server started - warming up engines in background"
+      "Server started - workers will initialize on demand"
     );
   });
 
-  (async () => {
-    try {
-      log.info("Warming up engines...");
+  // ✅ IDLE OPTIMIZATION: Start monitoring for idle resources
+  // Workers will be initialized on first request and shut down after 10 minutes of inactivity
+  startIdleMonitoring();
 
-      const warmupEngine = await createEngineInstance({
-        threads: ENGINE_THREADS,
-        hashMb: ENGINE_HASH_MB,
-        multiPv: 1,
-        keepAlive: true,
-      });
-
-      await warmupEngine.evaluatePositionWithUpdate({
-        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        depth: 10,
-        multiPv: 1,
-      } as any);
-
-      log.info("Singleton engine warmed up");
-      singletonEngine = warmupEngine;
-
-      await initializeWorkerPool();
-      log.info("All engines ready");
-
-    } catch (e) {
-      log.warn({ err: e }, "Engine warmup failed, will initialize on first request");
-    }
-  })();
-
-  if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
-    const KEEP_ALIVE_INTERVAL = 5 * 60 * 1000;
-
-    setInterval(() => {
-      fetch(`http://localhost:${PORT}/health`)
-        .then(() => log.debug("Keep-alive ping successful"))
-        .catch((e) => log.warn({ err: String(e) }, "Keep-alive ping failed"));
-    }, KEEP_ALIVE_INTERVAL);
-
-    log.info("Keep-alive enabled");
-  }
+  log.info(
+    {
+      strategy: "lazy-init",
+      idleTimeout: `${IDLE_TIMEOUT_MS / 60000} minutes`
+    },
+    "Idle resource optimization enabled - workers start on demand"
+  );
 })();
