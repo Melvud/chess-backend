@@ -364,6 +364,7 @@ async function evaluateGameParallel(
   return { positions: positionsMerged, settings } as any as GameEval;
 }
 
+// ✅ ИСПРАВЛЕННАЯ ФУНКЦИЯ С ПРАВИЛЬНЫМ ОПРЕДЕЛЕНИЕМ СТОРОНЫ МАТА
 function toClientPosition(
   posAny: any,
   fen: string,
@@ -371,6 +372,41 @@ function toClientPosition(
   isLastPosition: boolean,
   gameResult?: string
 ): ClientPosition {
+  
+  // 1. Сначала проверяем правила шахмат, игнорируя ответ движка, если это мат/пат
+  try {
+    const ch = new Chess(fen);
+    
+    if (ch.isCheckmate()) {
+      // Сторона, чей ход (ch.turn()), получила МАТ.
+      // Значит противоположная сторона поставила мат.
+      // Если ход белых ('w'), то белые заматованы → оценка отрицательная (mate < 0)
+      // Если ход черных ('b'), то черные заматованы → оценка положительная (mate > 0)
+      const matedSide = ch.turn(); // 'w' или 'b' - кто заматован
+      const mateValue = matedSide === 'w' ? -1 : 1;
+      
+      log.info({ fen, matedSide, mateValue }, "Checkmate detected");
+      
+      return {
+        fen,
+        idx,
+        lines: [{ pv: [], mate: mateValue, best: "" }]
+      };
+    }
+    
+    if (ch.isDraw() || ch.isStalemate() || ch.isThreefoldRepetition() || ch.isInsufficientMaterial()) {
+      // Пат или ничья - строго возвращаем CP 0
+      return {
+        fen,
+        idx,
+        lines: [{ pv: [], cp: 0, best: "" }]
+      };
+    }
+  } catch (e) {
+    // Если FEN битый, идем дальше, возможно движок справится или упадет ниже
+  }
+
+  // 2. Обычная обработка ответа движка
   const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
   
   const lines: ClientLine[] = rawLines.map((l: any) => {
@@ -387,18 +423,18 @@ function toClientPosition(
     };
   });
 
+  // 3. Fallback, если линий нет (но chess.js выше не сработал по какой-то причине)
   if (lines.length === 0) {
     if (isLastPosition && gameResult) {
       if (gameResult === "1-0") {
-        // Белые победили - мат для черных, с точки зрения белых это +1
         lines.push({ pv: [], mate: 1 });
       } else if (gameResult === "0-1") {
-        // Черные победили - мат для белых, с точки зрения белых это -1
         lines.push({ pv: [], mate: -1 });
       } else {
         lines.push({ pv: [], cp: 0 });
       }
     } else {
+      // По умолчанию считаем нулем, если движок ничего не вернул и это не мат
       lines.push({ pv: [], cp: 0 });
     }
   }
@@ -572,12 +608,12 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         return toClientPosition(posAny, fenStr, idx, idx === 1);
       });
 
+      // Дополнительная проверка на мат после выполнения хода
       try {
         const ch = new Chess();
         ch.load(String(beforeFen));
         
-        // Определяем, кто сделал ход (кто ходил в beforeFen)
-        const movedSide = ch.turn(); // 'w' или 'b'
+        const movedSide = ch.turn(); // 'w' или 'b' - кто делает ход
         
         const from = String(uciMove).slice(0, 2);
         const to = String(uciMove).slice(2, 4);
@@ -585,9 +621,11 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
         const mv = ch.move({ from, to, promotion: prom as any });
 
         if (mv && ch.isCheckmate && ch.isCheckmate()) {
-          // Если белые поставили мат (movedSide === 'w'), то mate: 1 (для белых это +)
-          // Если черные поставили мат (movedSide === 'b'), то mate: -1 (для белых это -)
-          const mateValue = movedSide === 'w' ? 1 : -1;
+          // После хода наступил мат
+          // ch.turn() теперь показывает сторону, которая заматована
+          const matedSide = ch.turn();
+          // Если заматованы белые → mate: -1, если черные → mate: 1
+          const mateValue = matedSide === 'w' ? -1 : 1;
           
           if (positions[1].lines.length === 0) {
             positions[1].lines.push({ pv: [], mate: mateValue });
@@ -599,10 +637,10 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             delete (positions[1].lines[0] as any).cp;
           }
 
-          log.info({ movedSide, mateValue }, `Checkmate detected, returning mate: ${mateValue}`);
+          log.info({ movedSide, matedSide, mateValue }, `Checkmate detected via move execution`);
         }
       } catch (e) {
-        log.warn({ err: e }, "Checkmate detection failed");
+        log.warn({ err: e }, "Checkmate detection via move failed");
       }
 
       const needBestFix =
@@ -694,7 +732,6 @@ app.use((req, res) => {
 });
 
 (async () => {
-  // КРИТИЧНО: Запускаем сервер СРАЗУ, чтобы healthcheck прошел
   app.listen(PORT, () => {
     log.info(
       {
@@ -708,7 +745,6 @@ app.use((req, res) => {
     );
   });
 
-  // Инициализируем движки В ФОНЕ (не блокируя запуск сервера)
   (async () => {
     try {
       log.info("Warming up engines...");
