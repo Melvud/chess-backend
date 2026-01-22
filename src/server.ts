@@ -139,7 +139,7 @@ let workerPoolReady = false;
 
 // ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
 let lastActivityTime = Date.now();
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 let idleCheckInterval: NodeJS.Timeout | null = null;
 
 function updateActivity() {
@@ -225,14 +225,6 @@ async function initializeWorkerPool() {
         hashMb: hashPer,
         multiPv: DEFAULT_MULTIPV,
         keepAlive: true,
-      }).then(async (eng) => {
-        await eng.evaluatePositionWithUpdate({
-          fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-          depth: 8,
-          multiPv: 1,
-        } as any);
-        log.info({ worker: i }, "Worker warmed up and process kept alive");
-        return eng;
       })
     );
   }
@@ -310,10 +302,10 @@ async function evaluateGameParallel(
   const fens = baseParams.fens ?? [];
   const uciMoves = baseParams.uciMoves ?? [];
   const total = fens.length;
-  
+
   const startTime = Date.now();
   const requested = Number(workersRequested);
-  
+
   let workers: number;
   if (total <= 20) {
     workers = 1;
@@ -378,12 +370,12 @@ async function evaluateGameParallel(
       if (shardDone > perWorkerDone[wi]) {
         perWorkerDone[wi] = shardDone;
         reportProgress();
-        
+
         if (progressId && shardDone > 0 && shardDone <= shardFens.length) {
           const currentIdx = idxs[shardDone - 1];
           const currentFen = currentIdx < fens.length ? fens[currentIdx] : undefined;
           const currentUci = currentIdx < uciMoves.length ? uciMoves[currentIdx] : undefined;
-          
+
           setProgress(progressId, {
             fen: currentFen,
             currentUci: currentUci,
@@ -401,7 +393,7 @@ async function evaluateGameParallel(
       __idx: idxs[k],
       ...pos,
     }));
-    
+
     return { ...out, positions: positionsWithIdx, __engine: eng };
   });
 
@@ -433,15 +425,15 @@ async function evaluateGameParallel(
       positionsMerged[p.__idx] = { fen: p.fen, idx: p.idx, lines: p.lines };
     }
   }
-    
+
   const first = shards.find(
     (s) => Array.isArray(s.positions) && s.positions.length > 0,
   );
   const settings = (first as any)?.settings ?? {};
-  
+
   const elapsed = Date.now() - startTime;
   log.info({ elapsed, msPerMove: Math.round(elapsed / total), workers }, "Parallel evaluation complete");
-  
+
   return { positions: positionsMerged, settings } as any as GameEval;
 }
 
@@ -453,11 +445,11 @@ function toClientPosition(
   isLastPosition: boolean,
   gameResult?: string
 ): ClientPosition {
-  
+
   // 1. Сначала проверяем правила шахмат, игнорируя ответ движка, если это мат/пат
   try {
     const ch = new Chess(fen);
-    
+
     if (ch.isCheckmate()) {
       // Сторона, чей ход (ch.turn()), получила МАТ.
       // Значит противоположная сторона поставила мат.
@@ -465,16 +457,16 @@ function toClientPosition(
       // Если ход черных ('b'), то черные заматованы → оценка положительная (mate > 0)
       const matedSide = ch.turn(); // 'w' или 'b' - кто заматован
       const mateValue = matedSide === 'w' ? -1 : 1;
-      
+
       log.info({ fen, matedSide, mateValue }, "Checkmate detected");
-      
+
       return {
         fen,
         idx,
         lines: [{ pv: [], mate: mateValue, best: "" }]
       };
     }
-    
+
     if (ch.isDraw() || ch.isStalemate() || ch.isThreefoldRepetition() || ch.isInsufficientMaterial()) {
       // Пат или ничья - строго возвращаем CP 0
       return {
@@ -489,14 +481,14 @@ function toClientPosition(
 
   // 2. Обычная обработка ответа движка
   const rawLines: any[] = Array.isArray(posAny?.lines) ? posAny.lines : [];
-  
+
   const lines: ClientLine[] = rawLines.map((l: any) => {
     const pv: string[] = Array.isArray(l?.pv)
       ? l.pv
       : Array.isArray(l?.pv?.moves)
-      ? l.pv.moves
-      : [];
-    
+        ? l.pv.moves
+        : [];
+
     return {
       pv: pv,
       cp: typeof l?.cp === "number" ? l.cp : undefined,
@@ -525,7 +517,7 @@ function toClientPosition(
     (posAny as any)?.bestMove ??
     (Array.isArray(firstPv) && firstPv.length > 0 ? firstPv[0] : undefined) ??
     "";
-  
+
   if (lines[0]) {
     lines[0].best = String(best);
   }
@@ -608,9 +600,9 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
         (p) => {
           if (progressId) {
             const done = Math.floor((p / 100) * fens.length);
-            setProgress(progressId, { 
-              done: Math.min(done, fens.length), 
-              stage: "evaluating" as ProgressStage 
+            setProgress(progressId, {
+              done: Math.min(done, fens.length),
+              stage: "evaluating" as ProgressStage
             });
           }
         },
@@ -697,9 +689,9 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       try {
         const ch = new Chess();
         ch.load(String(beforeFen));
-        
+
         const movedSide = ch.turn(); // 'w' или 'b' - кто делает ход
-        
+
         const from = String(uciMove).slice(0, 2);
         const to = String(uciMove).slice(2, 4);
         const prom = String(uciMove).slice(4) || undefined;
@@ -711,7 +703,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
           const matedSide = ch.turn();
           // Если заматованы белые → mate: -1, если черные → mate: 1
           const mateValue = matedSide === 'w' ? -1 : 1;
-          
+
           if (positions[1].lines.length === 0) {
             positions[1].lines.push({ pv: [], mate: mateValue });
           } else {
@@ -743,7 +735,7 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
             elo,
             ...(skillLevel !== undefined ? { skillLevel } : {}),
           } as any);
-          
+
           const rawTop = Array.isArray(eval0?.lines) ? eval0.lines[0] : undefined;
           const bestFromEngine: string =
             (eval0 as any)?.bestMove ??
@@ -788,13 +780,13 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
     } as any;
 
     const rawEval = await engine.evaluatePositionWithUpdate(params);
-    
+
     const rawLines = Array.isArray(rawEval?.lines)
       ? rawEval.lines.map((line: any) => ({
-          pv: line.pv,
-          cp: line.cp,
-          mate: line.mate,
-        }))
+        pv: line.pv,
+        cp: line.cp,
+        mate: line.mate,
+      }))
       : [];
 
     return res.json({

@@ -145,7 +145,7 @@ export class UciEngine {
       if (this.currentProc === proc) this.currentProc = null;
     });
     // Игнорируем stderr
-    proc.stderr.on("data", () => {});
+    proc.stderr.on("data", () => { });
     return proc;
   }
 
@@ -183,9 +183,9 @@ export class UciEngine {
       try {
         this.send(this.sessionProc, "quit");
         this.sessionProc.stdin.end();
-      } catch {}
+      } catch { }
       setTimeout(() => {
-        try { this.sessionProc?.kill("SIGKILL"); } catch {}
+        try { this.sessionProc?.kill("SIGKILL"); } catch { }
       }, 100);
     }
 
@@ -228,10 +228,10 @@ export class UciEngine {
     this.send(proc, `setoption name Threads value ${threads}`);
     this.send(proc, `setoption name Hash value ${hashMb}`);
     this.send(proc, `setoption name MultiPV value ${multiPv}`);
-    
+
     // ✅ ОПТИМИЗАЦИЯ: Отключаем Ponder для быстрого анализа
     this.send(proc, "setoption name Ponder value false");
-    
+
     if (opts.syzygyPath) this.send(proc, `setoption name SyzygyPath value ${opts.syzygyPath}`);
     if (typeof useNNUE === "boolean") {
       this.send(proc, `setoption name Use NNUE value ${useNNUE ? "true" : "false"}`);
@@ -247,7 +247,7 @@ export class UciEngine {
     }
 
     this.send(proc, "isready");
-    
+
     // ✅ Ждем готовности движка
     await new Promise<void>((resolve) => {
       const handler = (chunk: Buffer) => {
@@ -258,7 +258,7 @@ export class UciEngine {
       };
       proc.stdout.on("data", handler);
     });
-    
+
     this.send(proc, "ucinewgame");
   }
 
@@ -339,7 +339,7 @@ export class UciEngine {
           if (m?.depth && onProgress && m.depth !== lastDepthReported) {
             lastDepthReported = m.depth;
             const pct = Math.max(0, Math.min(100, Math.round((m.depth / Math.max(1, depth)) * 100)));
-            try { onProgress(pct); } catch {}
+            try { onProgress(pct); } catch { }
           }
         }
       }
@@ -357,8 +357,8 @@ export class UciEngine {
     await waitForBestmove(proc);
 
     // Завершаем работу движка
-    try { this.send(proc, "quit"); proc.stdin.end(); } catch {}
-    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+    try { this.send(proc, "quit"); proc.stdin.end(); } catch { }
+    setTimeout(() => { try { proc.kill("SIGKILL"); } catch { } }, 150);
 
     proc.stdout.off("data", onStdout);
 
@@ -413,7 +413,7 @@ export class UciEngine {
             const posProgress = (i / total) * 100;
             const depthContribution = (depthPct / total);
             const combined = Math.min(100, posProgress + depthContribution);
-            try { onProgress(combined); } catch {}
+            try { onProgress(combined); } catch { }
           }
         },
       );
@@ -422,15 +422,15 @@ export class UciEngine {
       // ✅ Финальное обновление после завершения позиции
       if (onProgress) {
         const pct = Math.round(((i + 1) / Math.max(1, total)) * 100);
-        try { onProgress(pct); } catch {}
+        try { onProgress(pct); } catch { }
       }
     }
 
     // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Не закрываем процесс если keepAlive = true
     // Это позволяет переиспользовать процесс для следующих анализов (устраняет задержку!)
     if (!this.keepAlive) {
-      try { this.send(proc, "quit"); proc.stdin.end(); } catch {}
-      setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 150);
+      try { this.send(proc, "quit"); proc.stdin.end(); } catch { }
+      setTimeout(() => { try { proc.kill("SIGKILL"); } catch { } }, 150);
     }
 
     const out: GameEval = {
@@ -458,8 +458,8 @@ export class UciEngine {
   async stopAllCurrentJobs(): Promise<void> {
     const p = this.currentProc;
     if (!p) return;
-    try { p.stdin.write("stop\n"); } catch {}
-    setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 100);
+    try { p.stdin.write("stop\n"); } catch { }
+    setTimeout(() => { try { p.kill("SIGKILL"); } catch { } }, 100);
     this.currentProc = null;
   }
 
