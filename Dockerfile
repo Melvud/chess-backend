@@ -1,5 +1,5 @@
-# Base image with Python 3.11
-FROM python:3.11-slim
+# Base image with Python 3.11 (stable bookworm)
+FROM python:3.11-slim-bookworm
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     build-essential \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     bash \
     && rm -rf /var/lib/apt/lists/*
