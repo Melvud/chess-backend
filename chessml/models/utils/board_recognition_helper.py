@@ -59,21 +59,21 @@ class BoardRecognitionHelper:
 
         squares, ranks, files = zip(*result.iterate_squares(square_size=128))
 
-        # --- PASS 1: Standard Recognition ---
-        class_indexes, scores = self.piece_classifier.classify_pieces([s.bw for s in squares])
+        # --- PASS 1: Brightness Corrected Recognition (Now Primary) ---
+        corrected_squares = [Picture(autocorrect_brightness_contrast(s.cv2)).bw for s in squares]
+        class_indexes, scores = self.piece_classifier.classify_pieces(corrected_squares)
         
         # Validate king counts
         if not self._is_king_count_valid(class_indexes):
-            print("Invalid king count in Pass 1, retrying with brightness correction...")
-            # --- PASS 2: Try with brightness correction ---
-            corrected_squares = [Picture(autocorrect_brightness_contrast(s.cv2)).bw for s in squares]
-            idx2, sc2 = self.piece_classifier.classify_pieces(corrected_squares)
+            print("Invalid king count in Pass 1 (Corrected), retrying with Original images...")
+            # --- PASS 2: Try with original images (Fallback) ---
+            idx2, sc2 = self.piece_classifier.classify_pieces([s.bw for s in squares])
             
             if self._is_king_count_valid(idx2):
                 class_indexes, scores = idx2, sc2
             else:
                 # If both are invalid, we'll try to heal the best one (Pass 1) using scores
-                print("Both passes failed validation, using confidence heuristics on Pass 1...")
+                print("Both passes failed validation, using confidence heuristics on Pass 1 (Corrected)...")
                 class_indexes = self._heal_king_counts(class_indexes, scores)
 
         classified_squares = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
