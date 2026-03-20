@@ -590,9 +590,10 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
   }
 
   try {
+    const file = req.file as Express.Multer.File;
     const formData = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-    formData.append("file", blob, req.file.originalname);
+    const blob = new Blob([file.buffer], { type: file.mimetype });
+    formData.append("file", blob, file.originalname);
 
     // Ensure recognition service is ready before fetch
     await recognitionService.ensureReady();
