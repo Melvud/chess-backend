@@ -579,6 +579,12 @@ function toClientPosition(
 }
 
 app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
+  return res.status(503).json({
+    error: "service_disabled",
+    message: "Chess recognition scanner is temporarily disabled in this deployment."
+  });
+
+  // Original logic preserved below (wont be reached)
   if (!req.file) {
     return res.status(400).json({ error: "no_file_uploaded" });
   }

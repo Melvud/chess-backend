@@ -1,5 +1,3 @@
-*.ckpt
-chessml/checkpoints/
 node_modules
 dist
 .git
@@ -8,4 +6,8 @@ __pycache__
 *.log
 venv
 .venv
-!chessml/models/*.pt
+chessml/
+fastapi_server.py
+requirements.txt
+*.ckpt
+*.pt

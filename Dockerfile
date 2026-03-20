@@ -23,11 +23,9 @@ RUN npx tsc -p . && npx tsc-alias -p tsconfig.json
 # ============================================
 # Stage 3: Final Production Image
 # ============================================
-FROM python:3.11-slim-bookworm
+FROM node:18-slim
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
 ENV PORT 8080
 ENV NODE_ENV production
 ENV STOCKFISH_PATH /app/bin/stockfish
@@ -41,21 +39,13 @@ ENV ENGINE_MAX_CONCURRENT_JOBS 3
 
 WORKDIR /app
 
-# Install system dependencies (Node.js + AI requirements)
+# Install system dependencies (Stockfish only)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     build-essential \
-    libgl1 \
-    libglib2.0-0 \
     ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python dependencies
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only production Node.js dependencies
 COPY package*.json ./
@@ -65,8 +55,11 @@ RUN npm install --production --no-optional
 COPY --from=builder /app/dist ./dist
 COPY --from=downloader /tmp/sf/stockfish-binary ./bin/stockfish
 
-# Copy the rest of the application (AI models, public assets, scripts)
-COPY . .
+# Copy only server-related files (exclude chessml and models)
+COPY src ./src
+COPY public ./public
+COPY scripts ./scripts
+COPY docker-entrypoint.sh ./
 
 # Ensure permissions
 RUN chmod +x scripts/start.sh && \
@@ -81,6 +74,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
 
-# Entrypoint and CMD using the user's suggested entrypoint
+# Entrypoint and CMD
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["bash", "scripts/start.sh"]
