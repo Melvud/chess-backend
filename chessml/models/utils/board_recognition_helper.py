@@ -110,21 +110,10 @@ class BoardRecognitionHelper:
 
             fen_rows.append("".join(fen_row))
 
-        fen_position = "/".join(fen_rows)
-        result.board.set_fen(f"{fen_position} w - - 0 1")
-
-        # 2. Predict metadata (side to move, castling, flipped)
-        (
-            white_kingside_castling,
-            white_queenside_castling,
-            black_kingside_castling,
-            black_queenside_castling,
-            white_turn,
-            flipped,
-        ) = self.meta_predictor.predict(OnlyPieces()(result.board))
-
-        # 3. If flipped, re-orient the pieces and rebuild FEN
+        # Build FEN
         if flipped:
+            # If flipped, rotating the matrix 180 degrees makes it 
+            # as if it was white-bottom, then we just map classes.
             # Mirror ranks and files: (r, f) -> (7-r, 7-f)
             rotated = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
             for r in range(BOARD_SIZE):
@@ -132,25 +121,34 @@ class BoardRecognitionHelper:
                     rotated[r][f] = classified_squares[BOARD_SIZE - 1 - r][BOARD_SIZE - 1 - f]
             classified_squares = rotated
 
-            # Rebuild FEN string from rotated squares
-            fen_rows = []
-            for row in reversed(classified_squares):
-                fen_row = []
-                empty_count = 0
-                for class_index in row:
-                    if class_index == PIECE_CLASSES[None]:
-                        empty_count += 1
-                    else:
-                        if empty_count > 0:
-                            fen_row.append(str(empty_count))
-                            empty_count = 0
-                        piece = INVERTED_PIECE_CLASSES[class_index]
-                        fen_row.append(piece)
-                if empty_count > 0:
-                    fen_row.append(str(empty_count))
-                fen_rows.append("".join(fen_row))
-            
-            fen_position = "/".join(fen_rows)
+        fen_rows = []
+        for row in reversed(classified_squares): # Rank 7 to 0 (8th to 1st)
+            fen_row = []
+            empty_count = 0
+            for class_index in row: # File A to H
+                if class_index == PIECE_CLASSES[None]:
+                    empty_count += 1
+                else:
+                    if empty_count > 0:
+                        fen_row.append(str(empty_count))
+                        empty_count = 0
+                    piece = INVERTED_PIECE_CLASSES[class_index]
+                    fen_row.append(piece)
+            if empty_count > 0:
+                fen_row.append(str(empty_count))
+            fen_rows.append("".join(fen_row))
+
+        fen_position = "/".join(fen_rows)
+        result.board.set_fen(f"{fen_position} w - - 0 1")
+
+        (
+            white_kingside_castling,
+            white_queenside_castling,
+            black_kingside_castling,
+            black_queenside_castling,
+            white_turn,
+            final_flipped,
+        ) = self.meta_predictor.predict(OnlyPieces()(result.board))
 
         castling = (
             "".join(
@@ -170,6 +168,9 @@ class BoardRecognitionHelper:
 
         result.flipped = bool(flipped)
 
+        # Heuristic: Ensure exactly one king per side if possible
+        # This is a simple version: if we have multiple kings, keep the one that seems 'most likely'
+        # or just the first one found. (In a better version, we'd use model confidence)
         self._ensure_single_king(result.board)
 
         return result

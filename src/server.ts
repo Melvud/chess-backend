@@ -153,7 +153,7 @@ let workerPoolInitPromise: Promise<void> | null = null;
 
 // ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
 let lastActivityTime = Date.now();
-const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MINUTES ?? 60) * 60 * 1000;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 let idleCheckInterval: NodeJS.Timeout | null = null;
 
 function updateActivity() {
@@ -917,20 +917,14 @@ app.use((req, res) => {
   });
 
   // ✅ IDLE OPTIMIZATION: Start monitoring for idle resources
-  // Workers will be initialized on first request and shut down after inactivity
+  // Workers will be initialized on first request and shut down after 10 minutes of inactivity
   startIdleMonitoring();
-
-  // ✅ PRE-WARMING: If requested, initialize the engine immediately
-  if (process.env.PREWARM_ENGINE === "true") {
-    log.info("Pre-warming engine as requested by PREWARM_ENGINE=true...");
-    getSingletonEngine().catch(e => log.error({ err: e }, "Pre-warming failed"));
-  }
 
   log.info(
     {
-      strategy: process.env.PREWARM_ENGINE === "true" ? "pre-warm" : "lazy-init",
+      strategy: "lazy-init",
       idleTimeout: `${IDLE_TIMEOUT_MS / 60000} minutes`
     },
-    "Resource management initialized"
+    "Idle resource optimization enabled - workers start on demand"
   );
 })();
