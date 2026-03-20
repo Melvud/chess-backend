@@ -168,7 +168,13 @@ function shutdownAllWorkers() {
     return;
   }
 
-  if (workerPool.length === 0 && !singletonEngine && !workerPoolInitPromise && !singletonInitPromise) {
+  if (
+    workerPool.length === 0 &&
+    !singletonEngine &&
+    !workerPoolInitPromise &&
+    !singletonInitPromise &&
+    !recognitionService.isRunning()
+  ) {
     return;
   }
 
