@@ -57,11 +57,19 @@ class BoardRecognitionHelper:
             board_image=self.board_detector.extract_board_image(original_image)
         )
 
+        # --- PREPARE: Corrected Board ---
+        corrected_board_image = Picture(autocorrect_brightness_contrast(result.board_image.cv2))
+        
+        # Split both into squares
         squares, ranks, files = zip(*result.iterate_squares(square_size=128))
+        
+        # Helper to iterate squares of the corrected image too
+        # We can reuse iterate_squares logic by creating a temporary result
+        temp_result = RecognitionResult(corrected_board_image)
+        corr_squares, _, _ = zip(*temp_result.iterate_squares(square_size=128))
 
         # --- PASS 1: Brightness Corrected Recognition (Now Primary) ---
-        corrected_squares = [Picture(autocorrect_brightness_contrast(s.cv2)).bw for s in squares]
-        class_indexes, scores = self.piece_classifier.classify_pieces(corrected_squares)
+        class_indexes, scores = self.piece_classifier.classify_pieces([s.bw for s in corr_squares])
         
         # Validate king counts
         if not self._is_king_count_valid(class_indexes):
