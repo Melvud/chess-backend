@@ -76,22 +76,11 @@ piece_dir = Path(config.assets.path) / "piece_png"
 if not piece_dir.exists() or not any(piece_dir.iterdir()):
     piece_dir = Path(config.assets.path) / "piece"
 
-PIECE_SETS: list[Path] = get_files_in_dir(piece_dir)
+PIECE_SETS: list[Path] = [] # Only for data generation
+FREE_PIECE_SETS_NAMES: list[str] = ["lichess_cburnett", "lichess_chessnut", "lichess_pirouetti", "lichess_merida", "lichess_mpchess"]
+FREE_PIECE_SETS: list[Path] = [] # Only for data generation
 
-FREE_PIECE_SETS_NAMES: list[str] = list(
-    map(
-        lambda name: f"lichess_{name}",
-        ["cburnett", "chessnut", "pirouetti", "merida", "mpchess"],
-    )
-)
-
-FREE_PIECE_SETS: list[Path] = [p for p in PIECE_SETS if p.name in FREE_PIECE_SETS_NAMES]
-
-bg_dir = Path(config.assets.path) / "bg" / "512"
-BG_IMAGES: list[Picture] = [
-    Picture(p).as_3_channels 
-    for p in get_files_in_dir(bg_dir, ".jpg")
-]
+BG_IMAGES: list[Picture] = [] # Only for data generation
 
 PIECE_CLASSES = {
     None: 0,

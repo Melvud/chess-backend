@@ -27,7 +27,9 @@ meta_model_path = str(MODELS_DIR / "meta_predictor.pt")
 
 # Initialize models
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Loading models on {device}...")
+cpu_count = os.cpu_count() or 1
+torch.set_num_threads(cpu_count)
+print(f"Loading models on {device} (threads: {cpu_count})...")
 
 detector = JITBoardDetector(board_model_path, device=device)
 classifier = JITPieceClassifier(piece_model_path, device=device)
