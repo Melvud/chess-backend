@@ -30,7 +30,6 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 cpu_count = os.cpu_count() or 1
 torch.set_num_threads(cpu_count)
 print(f"Loading models on {device} (threads: {cpu_count})...")
-
 detector = JITBoardDetector(board_model_path, device=device)
 classifier = JITPieceClassifier(piece_model_path, device=device)
 predictor = JITMetaPredictor(meta_model_path, device=device)

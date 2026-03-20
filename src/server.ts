@@ -627,9 +627,21 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
   }
 });
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/ping", (_req, res) => res.json({ ok: true }));
-app.post("/ping", (_req, res) => res.json({ ok: true }));
+app.get("/health", async (_req, res) => {
+  // Pre-warming: ensure recognition service is starting if not already
+  recognitionService.ensureReady().catch(e => log.error({ err: e }, "Pre-warming recognition service failed"));
+  res.json({ ok: true });
+});
+
+app.get("/ping", async (_req, res) => {
+  recognitionService.ensureReady().catch(e => log.error({ err: e }, "Pre-warming recognition service failed"));
+  res.json({ ok: true });
+});
+
+app.post("/ping", async (_req, res) => {
+  recognitionService.ensureReady().catch(e => log.error({ err: e }, "Pre-warming recognition service failed"));
+  res.json({ ok: true });
+});
 
 app.get("/api/v1/progress/:id", (req, res) => {
   const id = req.params.id;
