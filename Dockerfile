@@ -1,4 +1,4 @@
-# Base image with Python 3.11 (stable bookworm)
+# Base image with Python 3.11
 FROM python:3.11-slim-bookworm
 
 # Set environment variables
@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 ENV NODE_ENV production
 ENV PORT 8080
+# Explicitly add node_modules/.bin to PATH
+ENV PATH /app/node_modules/.bin:$PATH
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,7 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgl1 \
     libglib2.0-0 \
-    bash \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js
@@ -22,28 +23,25 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirement files first for better caching
+# Copy dependency files
 COPY package*.json ./
 COPY requirements.txt ./
 
-# Install dependencies
+# Install ALL dependencies (including devDependencies for tsc)
 RUN npm install
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
+# Copy application code
 COPY . .
 
-# Build the Node.js application
+# Build Node.js app
 RUN npm run build
 
-# Make the start script executable
-RUN chmod +x scripts/start.sh
-
-# Expose the gateway port
+# Expose port
 EXPOSE 8080
 
-# Use the startup script
-CMD ["bash", "scripts/start.sh"]
+# Start both servers: Python in background, Node in foreground
+# PYTHONUNBUFFERED ensures logs are visible immediately
+CMD python3 chessml/fastapi_server.py & node dist/server.js
