@@ -572,9 +572,8 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
 
   try {
     const formData = new FormData();
-    // Using File instead of Blob for better compatibility with FormData/FastAPI
-    const file = new File([req.file.buffer], req.file.originalname, { type: req.file.mimetype });
-    formData.append("file", file);
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    formData.append("file", blob, req.file.originalname);
 
     const response = await fetch(`${RECOGNITION_SERVICE_URL}/scan`, {
       method: "POST",
