@@ -121,9 +121,10 @@ def autocorrect_brightness_contrast(image, clip_hist_percent=1):
 
     # Calculate cumulative distribution from the histogram
     accumulator = []
-    accumulator.append(float(hist[0]))
+    hist_flat = hist.flatten()
+    accumulator.append(float(hist_flat[0]))
     for index in range(1, hist_size):
-        accumulator.append(accumulator[index - 1] + float(hist[index]))
+        accumulator.append(accumulator[index - 1] + float(hist_flat[index]))
 
     # Locate points to clip
     max_value = accumulator[-1]

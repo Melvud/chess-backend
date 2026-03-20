@@ -153,8 +153,7 @@ let workerPoolInitPromise: Promise<void> | null = null;
 
 // ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
 let lastActivityTime = Date.now();
-// Default 1 hour if not specified, effectively keeping it warm
-const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? (60 * 60 * 1000)); 
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 let idleCheckInterval: NodeJS.Timeout | null = null;
 
 function updateActivity() {
@@ -208,7 +207,10 @@ function shutdownAllWorkers() {
 }
 
 function startIdleMonitoring() {
-  if (idleCheckInterval) {
+  if (idleCheckInterval || IDLE_TIMEOUT_MS <= 0) {
+    if (IDLE_TIMEOUT_MS <= 0) {
+      log.info("Idle resource optimization is disabled - workers will remain warm");
+    }
     return;
   }
 
@@ -583,10 +585,10 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      log.error({ 
-        status: response.status, 
-        error: errorText, 
-        url: `${RECOGNITION_SERVICE_URL}/scan` 
+      log.error({
+        status: response.status,
+        error: errorText,
+        url: `${RECOGNITION_SERVICE_URL}/scan`
       }, "Recognition service error");
       return res.status(response.status).json({
         error: "recognition_service_failed",
@@ -595,13 +597,13 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
     }
 
     const data = (await response.json()) as { fen: string; flipped: boolean };
-    return res.json({ 
+    return res.json({
       status: "success",
-      fen: data.fen, 
-      flipped: data.flipped 
+      fen: data.fen,
+      flipped: data.flipped
     });
   } catch (e: any) {
-    log.error({ 
+    log.error({
       err: {
         message: e?.message,
         stack: e?.stack,
