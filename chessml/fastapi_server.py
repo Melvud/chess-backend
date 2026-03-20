@@ -52,8 +52,8 @@ async def scan(file: UploadFile = File(...)):
     result = helper.recognize(picture)
     
     return {
-        "fen": result.get_fen(),
-        "flipped": result.flipped
+        "fen": str(result.get_fen()),
+        "flipped": bool(result.flipped)
     }
 
 if __name__ == "__main__":
