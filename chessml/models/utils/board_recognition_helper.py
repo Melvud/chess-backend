@@ -1,8 +1,8 @@
 import numpy as np
 from chessml.data.assets import PIECE_CLASSES, BOARD_SIZE, INVERTED_PIECE_CLASSES
 import cv2
-from typing import Iterator, Optional, Any
-from chessml.data.images.picture import Picture
+from typing import Iterator, Optional, Any, List, Tuple
+from chessml.data.images.picture import Picture, autocorrect_brightness_contrast
 from chessml.data.boards.board_representation import OnlyPieces
 from chess import Board
 from pathlib import Path
@@ -16,14 +16,7 @@ class RecognitionResult:
 
     def iterate_squares(
         self, square_size: int
-    ) -> Iterator[tuple[np.ndarray, int, int]]:
-
-        if self.flipped:
-            row_range = range(BOARD_SIZE - 1, -1, -1)
-            col_range = range(BOARD_SIZE - 1, -1, -1)
-        else:
-            row_range = range(BOARD_SIZE)
-            col_range = range(BOARD_SIZE)
+    ) -> Iterator[tuple[Picture, int, int]]:
 
         resized_image = cv2.resize(
             self.board_image.cv2,
@@ -31,18 +24,11 @@ class RecognitionResult:
             interpolation=cv2.INTER_CUBIC,
         )
 
-        if self.flipped:
-            row_range = range(BOARD_SIZE - 1, -1, -1)
-            col_range = range(BOARD_SIZE - 1, -1, -1)
-        else:
-            row_range = range(BOARD_SIZE)
-            col_range = range(BOARD_SIZE)
-
-        for row in row_range:
+        for row in range(BOARD_SIZE):
             y_start = row * square_size
             y_end = y_start + square_size
             rank_index = BOARD_SIZE - 1 - row
-            for col in col_range:
+            for col in range(BOARD_SIZE):
                 x_start = col * square_size
                 x_end = x_start + square_size
                 file_index = col
@@ -72,12 +58,23 @@ class BoardRecognitionHelper:
         )
 
         squares, ranks, files = zip(*result.iterate_squares(square_size=128))
-        # result.board_image.pil.save("output/tmp/board.png")
-        # for i, s in enumerate(squares):
-        #     s.pil.save(f"output/tmp/{i}.png")
-        # quit()
 
-        class_indexes = self.piece_classifier.classify_pieces([s.bw for s in squares])
+        # --- PASS 1: Standard Recognition ---
+        class_indexes, scores = self.piece_classifier.classify_pieces([s.bw for s in squares])
+        
+        # Validate king counts
+        if not self._is_king_count_valid(class_indexes):
+            print("Invalid king count in Pass 1, retrying with brightness correction...")
+            # --- PASS 2: Try with brightness correction ---
+            corrected_squares = [Picture(autocorrect_brightness_contrast(s.cv2)).bw for s in squares]
+            idx2, sc2 = self.piece_classifier.classify_pieces(corrected_squares)
+            
+            if self._is_king_count_valid(idx2):
+                class_indexes, scores = idx2, sc2
+            else:
+                # If both are invalid, we'll try to heal the best one (Pass 1) using scores
+                print("Both passes failed validation, using confidence heuristics on Pass 1...")
+                class_indexes = self._heal_king_counts(class_indexes, scores)
 
         classified_squares = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
         for class_index, rank, file in zip(class_indexes, ranks, files):
@@ -87,7 +84,6 @@ class BoardRecognitionHelper:
         for row in reversed(classified_squares):
             fen_row = []
             empty_count = 0
-
             for class_index in row:
                 if class_index == PIECE_CLASSES[None]:
                     empty_count += 1
@@ -97,10 +93,8 @@ class BoardRecognitionHelper:
                         empty_count = 0
                     piece = INVERTED_PIECE_CLASSES[class_index]
                     fen_row.append(piece)
-
             if empty_count > 0:
                 fen_row.append(str(empty_count))
-
             fen_rows.append("".join(fen_row))
 
         fen_position = "/".join(fen_rows)
@@ -127,13 +121,38 @@ class BoardRecognitionHelper:
             or "-"
         )
 
-        # if flipped:
-        #     fen_position = "/".join(row[::-1] for row in fen_rows[::-1])
-
         result.board.set_fen(
             f"{fen_position} {'w' if white_turn else 'b'} {castling} - 0 1"
         )
-
-        result.flipped = flipped
+        result.flipped = bool(flipped)
 
         return result
+
+    def _is_king_count_valid(self, class_indexes: List[int]) -> bool:
+        white_kings = class_indexes.count(PIECE_CLASSES['K'])
+        black_kings = class_indexes.count(PIECE_CLASSES['k'])
+        return white_kings == 1 and black_kings == 1
+
+    def _heal_king_counts(self, class_indexes: List[int], scores: List[float]) -> List[int]:
+        # Heuristic: Find all king candidates and pick the one with highest score for each color
+        # All other kings are turned into Empty or their next best class (but we only have max class here)
+        # So we turn them into Empty.
+        
+        new_indexes = list(class_indexes)
+        
+        for king_class in [PIECE_CLASSES['K'], PIECE_CLASSES['k']]:
+            king_indices = [i for i, idx in enumerate(class_indexes) if idx == king_class]
+            
+            if len(king_indices) > 1:
+                # Keep only the one with the highest score
+                best_idx = max(king_indices, key=lambda i: scores[i])
+                for i in king_indices:
+                    if i != best_idx:
+                        new_indexes[i] = PIECE_CLASSES[None]
+            elif len(king_indices) == 0:
+                # If no king, we could search for any square that might have been a king
+                # but with argmax weights we can't easily do that without re-running classification
+                # for now we leave 0 kings (it's better than 2)
+                pass
+                
+        return new_indexes

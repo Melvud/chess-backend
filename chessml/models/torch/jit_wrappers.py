@@ -71,7 +71,7 @@ class JITPieceClassifier:
             transforms.ToTensor(),
         ])
 
-    def classify_pieces(self, images: List[Picture]) -> List[int]:
+    def classify_pieces(self, images: List[Picture]) -> Tuple[List[int], List[float]]:
         tensors = []
         for img in images:
             tensors.append(self.transform(img.pil))
@@ -79,8 +79,10 @@ class JITPieceClassifier:
         batch = torch.stack(tensors).to(self.device)
         with torch.no_grad():
             outputs = self.model(batch)
-            predicted = torch.argmax(outputs, 1)
-            return predicted.cpu().numpy().tolist()
+            probs = torch.softmax(outputs, 1)
+            predicted = torch.argmax(probs, 1)
+            scores = torch.max(probs, 1).values
+            return predicted.cpu().numpy().tolist(), scores.cpu().numpy().tolist()
 
 class JITMetaPredictor:
     def __init__(self, model_path: str, device: str = "cpu"):
