@@ -15,9 +15,5 @@ fi
 echo "Stockfish is ready!"
 ls -la /app/bin/stockfish
 
-# Запускаем сервис распознавания в фоне
-echo "Starting Recognition Service..."
-python3 chessml/fastapi_server.py &
-
-# Запускаем основную команду
+# Запускаем основную команду (обычно scripts/start.sh)
 exec "$@"
