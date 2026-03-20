@@ -4,7 +4,6 @@ FROM python:3.11-slim-bookworm
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
-ENV NODE_ENV production
 ENV PORT 8080
 # Explicitly add node_modules/.bin to PATH
 ENV PATH /app/node_modules/.bin:$PATH
@@ -36,10 +35,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Build Node.js app
-RUN npm run build
+# Build Node.js app using npx
+RUN npx tsc -p . && npx tsc-alias -p tsconfig.json
 
 # Expose port
+ENV NODE_ENV production
 EXPOSE 8080
 
 # Start both servers: Python in background, Node in foreground
