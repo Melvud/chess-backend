@@ -1,33 +1,29 @@
 #!/bin/bash
 
-# scripts/start.sh - Robust startup for Chess Backend on Railway
-set -e
-
-echo "--- Starting Chess Backend Initialization ---"
-
-# 1. Ensure Stockfish is executable
-if [ -f "/app/bin/stockfish" ]; then
-    echo "Setting execution permissions for /app/bin/stockfish"
-    chmod +x /app/bin/stockfish
-else
-    echo "WARNING: Stockfish binary not found at /app/bin/stockfish"
-    # Try to find it if it was installed via apt
-    if command -v stockfish &> /dev/null; then
-        echo "Stockfish found in PATH: $(command -v stockfish)"
-    fi
-fi
-
-# 2. Start Python Recognition Service in the background
-echo "Starting Python Recognition Service (FastAPI) on port 8000..."
-# PYTHONPATH helps with module discovery
-export PYTHONPATH=$PYTHONPATH:/app
+# Start the Python FastAPI server in the background
+echo "Starting Python Recognition Service..."
 python3 chessml/fastapi_server.py &
-PYTHON_PID=$!
 
-# 3. Wait a few seconds for Python to bind to port
-sleep 2
+# Wait for the Python server to be ready (models can take time to load)
+echo "Waiting for Python server to initialize models..."
+max_retries=60
+count=0
+while ! curl -s http://localhost:8000/health > /dev/null; do
+    sleep 2
+    count=$((count + 1))
+    if [ $count -ge $max_retries ]; then
+        echo "Error: Python server failed to start within time limit."
+        # Don't exit here, let Node start anyway if possible, 
+        # or maybe we should exit to trigger a container restart.
+        exit 1
+    fi
+    if [ $((count % 5)) -eq 0 ]; then
+        echo "Still waiting for Python server ($count/$max_retries)..."
+    fi
+done
 
-# 4. Start Node.js API Gateway in the foreground
-echo "Starting Node.js API Gateway (Express) on port ${PORT:-8080}..."
-# Use exec to let Node handle signals directly
+echo "Python server is ready!"
+
+# Start the Node.js server (this replaces the shell process)
+echo "Starting Node.js Gateway on port ${PORT:-8080}..."
 exec node dist/server.js
