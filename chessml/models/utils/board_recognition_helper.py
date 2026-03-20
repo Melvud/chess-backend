@@ -77,7 +77,7 @@ class BoardRecognitionHelper:
         #     s.pil.save(f"output/tmp/{i}.png")
         # quit()
 
-        class_indexes = self.piece_classifier.classify_pieces([s.as_3_channels for s in squares])
+        class_indexes = self.piece_classifier.classify_pieces([s.bw for s in squares])
 
         classified_squares = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
         for class_index, rank, file in zip(class_indexes, ranks, files):
