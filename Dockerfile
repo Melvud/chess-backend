@@ -65,7 +65,7 @@ COPY docker-entrypoint.sh ./
 RUN chmod +x scripts/start.sh && \
     chmod +x ./bin/stockfish && \
     chmod +x docker-entrypoint.sh && \
-    ln -s /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+    ln -sf /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Expose port
 EXPOSE 8080
