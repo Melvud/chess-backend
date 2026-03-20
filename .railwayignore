@@ -1,0 +1,11 @@
+*.ckpt
+chessml/checkpoints/
+node_modules
+dist
+.git
+.DS_Store
+__pycache__
+*.log
+venv
+.venv
+!chessml/models/*.pt

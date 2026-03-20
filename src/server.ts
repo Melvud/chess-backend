@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import pino from "pino";
 import pinoHttp from "pino-http";
+import multer from "multer";
 import { Chess } from "chess.js";
 
 import { EngineName } from "@/types/enums";
@@ -38,11 +39,18 @@ const ENGINE_WORKERS_MAX = Math.max(
 
 const ENGINE_MAX_CONCURRENT_JOBS = Math.max(
   1,
-  Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? 2),
+  Number(process.env.ENGINE_MAX_CONCURRENT_JOBS ?? 1),
 );
 
 const app = express();
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
+const RECOGNITION_SERVICE_URL = process.env.RECOGNITION_SERVICE_URL ?? "http://localhost:8000";
 
 app.use(
   cors({
@@ -60,6 +68,10 @@ app.use(
 
 const publicDir = path.join(process.cwd(), "public");
 app.use("/engines", express.static(path.join(publicDir, "engines")));
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
 
 type ProgressStage = "queued" | "preparing" | "evaluating" | "done";
 type Progress = {
@@ -133,9 +145,11 @@ type EngineIface = {
 };
 
 let singletonEngine: EngineIface | null = null;
+let singletonInitPromise: Promise<EngineIface> | null = null;
 
 const workerPool: EngineIface[] = [];
 let workerPoolReady = false;
+let workerPoolInitPromise: Promise<void> | null = null;
 
 // ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
 let lastActivityTime = Date.now();
@@ -147,7 +161,13 @@ function updateActivity() {
 }
 
 function shutdownAllWorkers() {
-  if (workerPool.length === 0 && !singletonEngine) {
+  const isBusy = jobQueue.getRunningCount() > 0;
+  if (isBusy) {
+    log.debug("Skipping idle shutdown because jobs are still running");
+    return;
+  }
+
+  if (workerPool.length === 0 && !singletonEngine && !workerPoolInitPromise && !singletonInitPromise) {
     return;
   }
 
@@ -182,6 +202,8 @@ function shutdownAllWorkers() {
   }
 
   log.info("All workers shut down successfully");
+  singletonInitPromise = null;
+  workerPoolInitPromise = null;
 }
 
 function startIdleMonitoring() {
@@ -206,34 +228,39 @@ function startIdleMonitoring() {
 
 async function initializeWorkerPool() {
   if (workerPoolReady) return;
+  if (workerPoolInitPromise) return workerPoolInitPromise;
 
-  const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / ENGINE_WORKERS_MAX));
-  const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / ENGINE_WORKERS_MAX));
+  workerPoolInitPromise = (async () => {
+    const threadsPer = Math.max(1, Math.floor(ENGINE_THREADS / ENGINE_WORKERS_MAX));
+    const hashPer = Math.max(128, Math.floor(ENGINE_HASH_MB / ENGINE_WORKERS_MAX));
 
-  log.info({
-    workers: ENGINE_WORKERS_MAX,
-    threadsPerWorker: threadsPer,
-    hashPerWorker: hashPer,
-    lazyInit: true
-  }, "Initializing worker pool on demand...");
+    log.info({
+      workers: ENGINE_WORKERS_MAX,
+      threadsPerWorker: threadsPer,
+      hashPerWorker: hashPer,
+      lazyInit: true
+    }, "Initializing worker pool on demand...");
 
-  const tasks = [];
-  for (let i = 0; i < ENGINE_WORKERS_MAX; i++) {
-    tasks.push(
-      createEngineInstance({
-        threads: threadsPer,
-        hashMb: hashPer,
-        multiPv: DEFAULT_MULTIPV,
-        keepAlive: true,
-      })
-    );
-  }
+    const tasks = [];
+    for (let i = 0; i < ENGINE_WORKERS_MAX; i++) {
+      tasks.push(
+        createEngineInstance({
+          threads: threadsPer,
+          hashMb: hashPer,
+          multiPv: DEFAULT_MULTIPV,
+          keepAlive: true,
+        })
+      );
+    }
 
-  const workers = await Promise.all(tasks);
-  workerPool.push(...workers);
-  workerPoolReady = true;
+    const workers = await Promise.all(tasks);
+    workerPool.push(...workers);
+    workerPoolReady = true;
 
-  log.info({ count: workerPool.length }, "Worker pool ready");
+    log.info({ count: workerPool.length }, "Worker pool ready");
+  })();
+
+  return workerPoolInitPromise;
 }
 
 async function createEngineInstance(opts?: {
@@ -249,18 +276,23 @@ async function createEngineInstance(opts?: {
 
 async function getSingletonEngine(): Promise<EngineIface> {
   if (singletonEngine) return singletonEngine;
+  if (singletonInitPromise) return singletonInitPromise;
 
-  log.info({ lazyInit: true }, "Initializing singleton engine on demand");
+  singletonInitPromise = (async () => {
+    log.info({ lazyInit: true }, "Initializing singleton engine on demand");
 
-  singletonEngine = await createEngineInstance({
-    threads: ENGINE_THREADS,
-    hashMb: ENGINE_HASH_MB,
-    multiPv: DEFAULT_MULTIPV,
-    keepAlive: true,
-  });
+    singletonEngine = await createEngineInstance({
+      threads: ENGINE_THREADS,
+      hashMb: ENGINE_HASH_MB,
+      multiPv: DEFAULT_MULTIPV,
+      keepAlive: true,
+    });
 
-  log.info("Singleton engine initialized");
-  return singletonEngine;
+    log.info("Singleton engine initialized");
+    return singletonEngine;
+  })();
+
+  return singletonInitPromise;
 }
 
 class AsyncQueue {
@@ -270,6 +302,10 @@ class AsyncQueue {
 
   constructor(concurrency: number) {
     this.concurrency = Math.max(1, concurrency);
+  }
+
+  getRunningCount() {
+    return this.running;
   }
 
   enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -529,6 +565,45 @@ function toClientPosition(
   };
 }
 
+app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "no_file_uploaded" });
+  }
+
+  try {
+    const formData = new FormData();
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    formData.append("file", blob, req.file.originalname);
+
+    const response = await fetch(`${RECOGNITION_SERVICE_URL}/scan`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      log.error({ status: response.status, error: errorText }, "Recognition service error");
+      return res.status(response.status).json({
+        error: "recognition_service_failed",
+        details: errorText,
+      });
+    }
+
+    const data = (await response.json()) as { fen: string; flipped: boolean };
+    return res.json({ 
+      status: "success",
+      fen: data.fen, 
+      flipped: data.flipped 
+    });
+  } catch (e: any) {
+    log.error({ err: e }, "Scan request failed");
+    return res.status(500).json({
+      error: "scan_failed",
+      details: String(e?.message ?? e),
+    });
+  }
+});
+
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/ping", (_req, res) => res.json({ ok: true }));
 app.post("/ping", (_req, res) => res.json({ ok: true }));
@@ -628,8 +703,10 @@ app.post("/api/v1/evaluate/positions", async (req, res) => {
       } as PositionsResponse;
     });
 
+    updateActivity();
     return res.json(result);
   } catch (e: any) {
+    updateActivity();
     if (progressId) setProgress(progressId, { stage: "done" as ProgressStage });
     log.error({ err: e }, "Evaluation failed");
     return res.status(500).json({
@@ -793,7 +870,10 @@ app.post("/api/v1/evaluate/position", async (req, res) => {
       lines: rawLines,
       bestMove: (rawEval as any)?.bestMove,
     });
+
+    updateActivity();
   } catch (e: any) {
+    updateActivity();
     log.error({ err: e }, "Position evaluation failed");
     return res.status(500).json({
       error: "evaluate_position_failed",
@@ -809,7 +889,8 @@ app.use((req, res) => {
 });
 
 (async () => {
-  app.listen(PORT, () => {
+  console.log(`Starting Node.js server on port ${PORT}...`);
+  app.listen(PORT, "0.0.0.0", () => {
     log.info(
       {
         port: PORT,

@@ -1,0 +1,10 @@
+[phases.setup]
+nixPkgs = ["nodePackages.npm", "python3", "libglvnd", "glib"]
+
+[phases.build]
+cmds = ["npm install", "pip install -r requirements.txt", "npm run build"]
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 300

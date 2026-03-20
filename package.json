@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p . && tsc-alias -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "npx concurrently --kill-others \"node dist/server.js\" \"python3 chessml/fastapi_server.py\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts"
   },
@@ -28,11 +28,14 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "multer": "^2.1.1",
     "pino": "^8.16.2",
-    "pino-http": "^8.5.1"
+    "pino-http": "^8.5.1",
+    "concurrently": "^9.2.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
+    "@types/multer": "^2.1.0",
     "tsc-alias": "^1.8.8",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"

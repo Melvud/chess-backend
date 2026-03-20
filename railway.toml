@@ -1,19 +1,21 @@
-[build]
 builder = "NIXPACKS"
 
+[phases.setup]
+nixPkgs = ["nodePackages.npm", "python3", "libglvnd", "glib"]
+
+[phases.build]
+cmds = ["npm install", "pip install -r requirements.txt", "npm run build"]
+
 [deploy]
+startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+healthcheckInterval = 30
 numReplicas = 1
 sleepApplication = false
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-healthcheckPath = "/health"
-healthcheckTimeout = 10
-
-[[deploy.healthcheck]]
-path = "/health"
-interval = 30
-timeout = 10
 
 [env]
-# Увеличиваем таймауты Node.js
-NODE_OPTIONS = "--max-old-space-size=6144"
+# Увеличиваем таймауты Node.js и ограничиваем память до разумных 4ГБ
+NODE_OPTIONS = "--max-old-space-size=4096"
