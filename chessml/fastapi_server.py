@@ -11,6 +11,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import sys
+import os
+from pathlib import Path
+
+# Add project root to sys.path to resolve 'chessml' package
+root_path = str(Path(__file__).parent.parent)
+if root_path not in sys.path:
+    sys.path.append(root_path)
+
 from chessml.models.torch.jit_wrappers import JITBoardDetector, JITPieceClassifier, JITMetaPredictor
 from chessml.models.utils.board_recognition_helper import BoardRecognitionHelper
 from chessml.data.images.picture import Picture

@@ -4,16 +4,16 @@ builder = "NIXPACKS"
 nixPkgs = ["nodePackages.npm", "python3", "libglvnd", "glib"]
 
 [phases.build]
-cmds = ["npm install", "pip install -r requirements.txt", "npm run build"]
+cmds = ["npm install", "pip install -r requirements.txt", "npm run build", "chmod +x scripts/start.sh"]
 
 [deploy]
 startCommand = "npm start"
 healthcheckPath = "/health"
-healthcheckTimeout = 300
+healthcheckTimeout = 600
 healthcheckInterval = 30
 numReplicas = 1
 sleepApplication = false
-restartPolicyType = "ON_FAILURE"
+restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10
 
 [env]

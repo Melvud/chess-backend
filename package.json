@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p . && tsc-alias -p tsconfig.json",
-    "start": "npx concurrently --kill-others \"node dist/server.js\" \"python3 chessml/fastapi_server.py\"",
+    "start": "bash scripts/start.sh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts"
   },
