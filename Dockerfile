@@ -17,6 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Download and install Stockfish 17.1 (Native Binary)
+RUN mkdir -p /app/bin && \
+    curl -L https://github.com/official-stockfish/Stockfish/releases/download/sf_17.1/stockfish-ubuntu-x86-64-avx2.tar | tar x -C /app/bin --strip-components=3 && \
+    mv /app/bin/stockfish-ubuntu-x86-64-avx2 /app/bin/stockfish && \
+    chmod +x /app/bin/stockfish
+
 # Install Node.js
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \

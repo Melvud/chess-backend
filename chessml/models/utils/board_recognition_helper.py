@@ -90,11 +90,11 @@ class BoardRecognitionHelper:
         for class_index, rank, file in zip(class_indexes, ranks, files):
             classified_squares[rank][file] = class_index
 
+        # First pass FEN (white-bottom assumption) to get board state for MetaPredictor
         fen_rows = []
         for row in reversed(classified_squares):
             fen_row = []
             empty_count = 0
-
             for class_index in row:
                 if class_index == PIECE_CLASSES[None]:
                     empty_count += 1
@@ -104,16 +104,25 @@ class BoardRecognitionHelper:
                         empty_count = 0
                     piece = INVERTED_PIECE_CLASSES[class_index]
                     fen_row.append(piece)
-
             if empty_count > 0:
                 fen_row.append(str(empty_count))
-
             fen_rows.append("".join(fen_row))
+        
+        temp_fen = "/".join(fen_rows)
+        result.board.set_fen(f"{temp_fen} w - - 0 1")
 
-        # Build FEN
+        # Now get metadata (castling, turn, and most importantly: flipped)
+        (
+            white_kingside_castling,
+            white_queenside_castling,
+            black_kingside_castling,
+            black_queenside_castling,
+            white_turn,
+            flipped,
+        ) = self.meta_predictor.predict(OnlyPieces()(result.board))
+
+        # Re-orient board if flipped
         if flipped:
-            # If flipped, rotating the matrix 180 degrees makes it 
-            # as if it was white-bottom, then we just map classes.
             # Mirror ranks and files: (r, f) -> (7-r, 7-f)
             rotated = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
             for r in range(BOARD_SIZE):
@@ -121,34 +130,26 @@ class BoardRecognitionHelper:
                     rotated[r][f] = classified_squares[BOARD_SIZE - 1 - r][BOARD_SIZE - 1 - f]
             classified_squares = rotated
 
-        fen_rows = []
-        for row in reversed(classified_squares): # Rank 7 to 0 (8th to 1st)
-            fen_row = []
-            empty_count = 0
-            for class_index in row: # File A to H
-                if class_index == PIECE_CLASSES[None]:
-                    empty_count += 1
-                else:
-                    if empty_count > 0:
-                        fen_row.append(str(empty_count))
-                        empty_count = 0
-                    piece = INVERTED_PIECE_CLASSES[class_index]
-                    fen_row.append(piece)
-            if empty_count > 0:
-                fen_row.append(str(empty_count))
-            fen_rows.append("".join(fen_row))
-
-        fen_position = "/".join(fen_rows)
-        result.board.set_fen(f"{fen_position} w - - 0 1")
-
-        (
-            white_kingside_castling,
-            white_queenside_castling,
-            black_kingside_castling,
-            black_queenside_castling,
-            white_turn,
-            final_flipped,
-        ) = self.meta_predictor.predict(OnlyPieces()(result.board))
+            # Rebuild FEN with correct orientation
+            fen_rows = []
+            for row in reversed(classified_squares):
+                fen_row = []
+                empty_count = 0
+                for class_index in row:
+                    if class_index == PIECE_CLASSES[None]:
+                        empty_count += 1
+                    else:
+                        if empty_count > 0:
+                            fen_row.append(str(empty_count))
+                            empty_count = 0
+                        piece = INVERTED_PIECE_CLASSES[class_index]
+                        fen_row.append(piece)
+                if empty_count > 0:
+                    fen_row.append(str(empty_count))
+                fen_rows.append("".join(fen_row))
+            fen_position = "/".join(fen_rows)
+        else:
+            fen_position = temp_fen
 
         castling = (
             "".join(

@@ -153,7 +153,8 @@ let workerPoolInitPromise: Promise<void> | null = null;
 
 // ✅ IDLE RESOURCE OPTIMIZATION: Track activity and shutdown idle workers
 let lastActivityTime = Date.now();
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// Default 1 hour if not specified, effectively keeping it warm
+const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? (60 * 60 * 1000)); 
 let idleCheckInterval: NodeJS.Timeout | null = null;
 
 function updateActivity() {
