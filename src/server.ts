@@ -7,6 +7,7 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import multer from "multer";
 import { Chess } from "chess.js";
+import { recognitionService } from "./lib/recognition/recognitionService";
 
 import { EngineName } from "@/types/enums";
 import type {
@@ -204,6 +205,9 @@ function shutdownAllWorkers() {
   log.info("All workers shut down successfully");
   singletonInitPromise = null;
   workerPoolInitPromise = null;
+
+  // Also shutdown recognition service if running
+  recognitionService.stop();
 }
 
 function startIdleMonitoring() {
@@ -577,6 +581,10 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
     const formData = new FormData();
     const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
     formData.append("file", blob, req.file.originalname);
+
+    // Ensure recognition service is ready before fetch
+    await recognitionService.ensureReady();
+    updateActivity();
 
     const response = await fetch(`${RECOGNITION_SERVICE_URL}/scan`, {
       method: "POST",
