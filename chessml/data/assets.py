@@ -62,11 +62,21 @@ BOARD_COLORS = [
     ("#779954", "#E9EDCC"),
 ]
 
-PIECE_SETS: list[Path] = [
-    Path(config.assets.path) / "piece_png" / name
-    for name in sorted(os.listdir(str(Path(config.assets.path) / "piece_png")))
-    if not name.startswith("_")
-]
+def get_files_in_dir(path: Path, ext: str = None) -> list[Path]:
+    if not path.exists():
+        return []
+    return [
+        path / name
+        for name in sorted(os.listdir(str(path)))
+        if not name.startswith("_") and (ext is None or name.endswith(ext))
+    ]
+
+# Try piece_png first, then piece
+piece_dir = Path(config.assets.path) / "piece_png"
+if not piece_dir.exists() or not any(piece_dir.iterdir()):
+    piece_dir = Path(config.assets.path) / "piece"
+
+PIECE_SETS: list[Path] = get_files_in_dir(piece_dir)
 
 FREE_PIECE_SETS_NAMES: list[str] = list(
     map(
@@ -77,10 +87,10 @@ FREE_PIECE_SETS_NAMES: list[str] = list(
 
 FREE_PIECE_SETS: list[Path] = [p for p in PIECE_SETS if p.name in FREE_PIECE_SETS_NAMES]
 
+bg_dir = Path(config.assets.path) / "bg" / "512"
 BG_IMAGES: list[Picture] = [
-    Picture(Path(config.assets.path) / "bg" / "512" / name).as_3_channels
-    for name in sorted(os.listdir(str(Path(config.assets.path) / "bg" / "512")))
-    if name.endswith(".jpg")
+    Picture(p).as_3_channels 
+    for p in get_files_in_dir(bg_dir, ".jpg")
 ]
 
 PIECE_CLASSES = {
