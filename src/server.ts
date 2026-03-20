@@ -50,7 +50,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-const RECOGNITION_SERVICE_URL = process.env.RECOGNITION_SERVICE_URL ?? "http://localhost:8000";
+const RECOGNITION_SERVICE_URL = process.env.RECOGNITION_SERVICE_URL ?? "http://127.0.0.1:8000";
 
 app.use(
   cors({
@@ -572,8 +572,9 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
 
   try {
     const formData = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-    formData.append("file", blob, req.file.originalname);
+    // Using File instead of Blob for better compatibility with FormData/FastAPI
+    const file = new File([req.file.buffer], req.file.originalname, { type: req.file.mimetype });
+    formData.append("file", file);
 
     const response = await fetch(`${RECOGNITION_SERVICE_URL}/scan`, {
       method: "POST",
@@ -582,7 +583,11 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      log.error({ status: response.status, error: errorText }, "Recognition service error");
+      log.error({ 
+        status: response.status, 
+        error: errorText, 
+        url: `${RECOGNITION_SERVICE_URL}/scan` 
+      }, "Recognition service error");
       return res.status(response.status).json({
         error: "recognition_service_failed",
         details: errorText,
@@ -596,7 +601,15 @@ app.post("/api/v1/scan", upload.single("image"), async (req, res) => {
       flipped: data.flipped 
     });
   } catch (e: any) {
-    log.error({ err: e }, "Scan request failed");
+    log.error({ 
+      err: {
+        message: e?.message,
+        stack: e?.stack,
+        cause: e?.cause,
+        code: e?.code
+      },
+      url: `${RECOGNITION_SERVICE_URL}/scan`
+    }, "Scan request failed");
     return res.status(500).json({
       error: "scan_failed",
       details: String(e?.message ?? e),
